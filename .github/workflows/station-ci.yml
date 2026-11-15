@@ -14,6 +14,12 @@ jobs:
           python-version: '3.12'
       - shell: pwsh
         run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'setup-windows.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors) { throw ($errors -join [Environment]::NewLine) }
+          powershell.exe -NoProfile -STA -File ./setup-windows.ps1 -SmokeTest
+          if ($LASTEXITCODE -ne 0) { throw 'Windows setup form initialization failed.' }
           ./install-station.ps1
           ./.venv/Scripts/python.exe -m unittest -v
   verify:

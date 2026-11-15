@@ -14,6 +14,9 @@ from analytics import pos_exception_signal, register_forecast
 from station import FIELDS, ROOT, connect, create_app, migrate
 from commander import tlog_csv, import_plu, get_partner_xml
 from monitor import poll
+from notifications import deliver
+from queue_tracking import estimates, record_event
+from urllib.error import URLError
 
 
 class StationTest(unittest.TestCase):
@@ -119,6 +122,72 @@ class StationTest(unittest.TestCase):
                       for day in range(8) for transaction in range(20)]
         self.assertEqual(pos_exception_signal(exceptions, timezone.utc)[1:], (5, 20, 25.0, 0.0))
         self.assertIsNone(pos_exception_signal(exceptions[:-20], timezone.utc))
+
+    def test_forecast_stable_shift_and_sparse_history(self):
+        start = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
+        for counts, expected_error in (((12, 12, 12, 12, 12, 12), 0), ((6, 6, 6, 30), 1)):
+            rows = [{"occurred_at": (start + timedelta(weeks=week)).isoformat()}
+                    for week, count in enumerate(counts) for _ in range(count)]
+            _, error, hours, schedule = register_forecast(rows, timezone.utc, 3, include_profile=True)
+            self.assertEqual(error, expected_error)
+            self.assertEqual(hours, (len(counts) - 3) * 24)
+            self.assertIsNone(schedule[0][10])
+            self.assertEqual(schedule[3][10][2], len(counts))
+        self.assertIn(b"Evidence is limited", self.client.get("/").data)
+
+    def test_camera_setup_check_and_queue_track_lifecycle(self):
+        with patch.dict(os.environ, NAVIQRA_FRIGATE_URL="https://fixture.invalid"):
+            app = create_app({"TESTING": True, "DATABASE": self.path, "SECRET_KEY": "a" * 40})
+        self.client = app.test_client()
+        self.post("login", username="owner", password="synthetic-password")
+        self.assertEqual(self.post("camera-setup", camera="cashier", protocol="ONVIF", queue_zone="line").status_code, 302)
+        with patch("station.fetch_stats", return_value={"cashier": 7.5}):
+            self.assertEqual(self.post("camera-check", camera="cashier").status_code, 302)
+        self.assertIn(b"7.5 captured frames per second", self.client.get("/").data)
+
+        def payload(action, stamp, zones, track="first", label="person"):
+            return json.dumps({"type": action, "after": {"camera": "cashier", "id": track,
+                "label": label, "frame_time": stamp, "current_zones": zones, "false_positive": False}})
+
+        with closing(connect(self.path)) as db, db:
+            for _ in range(3):
+                self.assertTrue(record_event(db, payload("new", 1000, ["line"]), 1000))
+            self.assertFalse(record_event(db, payload("new", 1000, ["line"], "car", "car"), 1000))
+            self.assertEqual(estimates(db, 1000)[0]["waiting"], 1)
+            record_event(db, payload("update", 1001, ["line"], "second"), 1001)
+            self.assertEqual(estimates(db, 1001)[0]["waiting"], 2)
+            record_event(db, payload("end", 1010, ["line"]), 1010)
+            record_event(db, payload("update", 1005, ["line"]), 1010)
+            self.assertEqual(estimates(db, 1010)[0]["waiting"], 1)
+            self.assertIsNone(estimates(db, 1060)[0]["observed"])
+
+    def test_webhook_retries_with_stable_id_and_no_resend_after_success(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        with closing(connect(self.path)) as db:
+            db.execute("""INSERT INTO incidents(camera,category,detail,opened)
+                VALUES ('cashier','Camera offline','synthetic',?)""",
+                (now.isoformat(timespec="microseconds"),))
+            db.commit()
+            with patch("notifications.build_opener") as opener:
+                seen = []
+                response = opener.return_value.open.return_value.__enter__.return_value
+                response.status = 204
+
+                def send(request, timeout):
+                    seen.append((request.get_header("Idempotency-key"), json.loads(request.data)))
+                    if len(seen) == 1:
+                        raise URLError("synthetic timeout")
+                    return opener.return_value.open.return_value
+
+                opener.return_value.open.side_effect = send
+                at = now.timestamp()
+                send_alert = lambda stamp: deliver(db, "https://fixture.invalid/receive", "", "TEST", stamp)
+                self.assertIs(send_alert(at), False)
+                self.assertIsNone(send_alert(at + 1))
+                self.assertIs(send_alert(at + 30), True)
+                self.assertIsNone(send_alert(at + 120))
+                self.assertEqual(seen[0], seen[1])
+                self.assertEqual(seen[0][0], "TEST-incident-1")
 
     def test_invoice_sale_refund_cost_and_retry(self):
         self.assertEqual(self.post("product", sku="W", name="Water", barcode="",

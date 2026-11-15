@@ -57,6 +57,18 @@
 </div>
 <div>
 <section id="cameras"><h2>Cameras &amp; Incidents</h2>
+<details><summary>Set up a camera</summary>
+<p>Frigate runs as a separate service. Add your RTSP stream, discover the camera through ONVIF, or configure a recorder channel in Frigate. Then enter its configuration ID here.</p>
+{% if frigate %}<p><a href="{{ frigate }}/" rel="noreferrer">Open Frigate camera settings</a></p>{% endif %}
+<form method="post" action="/camera-setup">{{ csrf() }}
+{{ field('Frigate camera ID','camera') }}
+<label>Input source<select name="protocol"><option>RTSP</option><option>ONVIF</option><option>DVR/NVR</option></select></label>
+<label>Frigate queue zone ID (optional)<input name="queue_zone"></label><button>Save camera setup</button>
+</form></details>
+{% for camera in camera_setup %}
+<p><strong>{{ camera.camera }}</strong> · {{ camera.protocol }}{% if camera.queue_zone %} · Queue zone {{ camera.queue_zone }}{% endif %}</p>
+{% if frigate %}<form method="post" action="/camera-check">{{ csrf() }}<input type="hidden" name="camera" value="{{ camera.camera }}"><button>Check {{ camera.camera }} stream status</button></form>{% endif %}
+{% endfor %}
 {% if frigate %}
 <form method="post" action="/sync-cameras">{{ csrf() }}<button>Refresh Frigate events</button></form>
 {% for camera in health %}<p>{{ camera.camera }} · {{ camera.state }}<br><small>Last check {{ camera.checked }}</small></p>
@@ -80,34 +92,45 @@
 <details><summary>Remove saved footage</summary><form method="post" action="/delete-clip">{{ csrf() }}<input type="hidden" name="incident" value="{{ incident.id }}"><button>Remove local clip</button></form></details>{% endif %}
 </details>
 {% endfor %}
+{% if delivery %}
+<details><summary>External alert delivery</summary>
+{% for alert in delivery %}
+<p>Incident #{{ alert.incident }} · {{ alert.attempts }} attempt(s) · {% if alert.delivered is not none %}Accepted by receiver{% elif alert.attempts >= 8 %}Retries exhausted{% else %}Waiting for retry{% endif %}{% if alert.error %}<br>{{ alert.error }}{% endif %}</p>
+{% endfor %}
+</details>{% endif %}
 </section>
 <section id="pos"><h2>Recent POS Exceptions</h2>
 {% for row in exceptions %}<p><b>{{ row.kind }}</b> · {{ row.transaction_id }}<br><small>{{ row.occurred_at }} · {{ row.source }}</small>{% if row.clip %}<br><a href="{{ row.clip }}" rel="noreferrer">Check recording near transaction time</a>{% endif %}</p>{% else %}<p>No POS exceptions have been imported.</p>{% endfor %}
 {% if frigate %}<form method="post" action="/source-camera">{{ csrf() }}{{ field('POS source identifier for this register','source') }}{{ field('Frigate camera name','camera') }}<button>Save camera mapping</button></form>{% endif %}</section>
 <section><h2>Business Guardian</h2>
 {% for camera in health if camera.state in ('Offline', 'Stale') %}
-<p>Check {{ camera.camera }} before relying on footage. Health status: {{ camera.state | lower }} as of {{ camera.checked }}.</p>
+<p><strong>Check {{ camera.camera }}.</strong> Health was {{ camera.state | lower }} at {{ camera.checked }}. Open Frigate and verify capture and recording before relying on footage.</p>
 {% endfor %}
-{% if incidents | selectattr('reviewed', 'none') | list %}<p>Review open security incidents and preserve applicable footage before its Frigate retention expires.</p>{% endif %}
+{% set open_incidents = incidents | selectattr('reviewed', 'none') | list %}
+{% if open_incidents %}<p><strong>Review security incidents.</strong> {{ open_incidents | length }} open incidents are shown. Review each incident and save relevant footage before Frigate retention expires.</p>{% endif %}
 {% if exception_signal %}{% set day, count, total, current, baseline = exception_signal %}
 <p>Review {{ day }}: {{ count }} of {{ total }} imported transactions included POS exceptions ({{ current }}% versus {{ baseline }}% over prior observed dates). Check export coverage and review the transactions.</p>{% endif %}
-{% for row in stock if row.balance <= row.reorder %}<p>Check reorder needs for {{ row.name }} at {{ row.code }}. On hand {{ row.balance }}, reorder point {{ row.reorder }}.</p>{% endfor %}
+{% for row in stock if row.balance <= row.reorder %}<p><strong>Review replenishment for {{ row.name }}.</strong> {{ row.code }} has {{ row.balance }} on hand against a reorder point of {{ row.reorder }}. Check open orders before placing another.</p>{% endfor %}
 {% if expiring %}<p>Review {{ expiring | length }} displayed lots due within 30 days or already expired.</p>{% endif %}
 {% if pending %}<p>Review unapplied POS lines before using posted merchandise margin.</p>{% endif %}
 {% if exceptions %}<p>Review recent POS exceptions and check recordings where a register camera is mapped.</p>{% endif %}
 </section>
 <section id="advisor"><h2>Register Advisor</h2><p>Estimates use observed transaction days and {{ minutes }} minute(s) of service per visit. Each register is planned at 80% utilization.</p>
 <form method="post" action="/service-time">{{ csrf() }}{{ field('Minutes of service per visit','minutes','number') }}<button>Save service time</button></form>
-{% if forecast_error is not none %}<p>Historical mean absolute error: {{ forecast_error }} transactions per hour across {{ validation_hours }} evaluated hours.</p>{% endif %}
+{% if forecast_error is not none %}<p>Historical mean absolute error: {{ forecast_error }} transactions per hour across {{ validation_hours }} evaluated hours ({{ evaluated_days }} observed days).</p>{% endif %}
+<p>Evidence is limited until at least six dates are observed for the weekday. Use staffing estimates as a planning input and verify export coverage.</p>
 {% if advice %}<h3>Top Observed Peak Hours</h3>{% endif %}
-{% for weekday, hour, observations, rate, registers, overloaded in advice %}<p>{{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][weekday] }} {{ '%02d:00' | format(hour) }} · {{ rate }} per hour · {{ registers }} register(s) · {{ observations }} observed days{% if overloaded %} · Planned demand exceeds two-register capacity{% endif %}</p>
+{% for weekday, hour, observations, rate, registers, overloaded in advice %}<p>{{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][weekday] }} {{ '%02d:00' | format(hour) }} · {{ rate }} per hour · {{ observations }} observed days{% if observations < 6 %} · Limited evidence{% else %} · {{ registers }} planned register(s) · Higher sample coverage{% if overloaded %} · Estimated demand exceeds two-register capacity{% endif %}{% endif %}</p>
 {% else %}<p>Import sales from at least three dates for the same weekday to see estimates.</p>{% endfor %}</section>
 <section><h2>Weekly Register Schedule</h2><details><summary>View all 24 hours for seven days</summary>
 <div class="table"><table><thead><tr><th>Local hour</th>{% for day in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}<th>{{ day }}</th>{% endfor %}</tr></thead><tbody>
 {% for hour in range(24) %}<tr><th>{{ '%02d:00' | format(hour) }}</th>
-{% for day in schedule %}{% set entry = day[hour] %}<td>{% if entry %}{{ entry[4] }} reg. / {{ entry[3] }} tx{% if entry[5] %} +{% endif %}{% else %}—{% endif %}</td>{% endfor %}</tr>{% endfor %}
+{% for day in schedule %}{% set entry = day[hour] %}<td>{% if entry %}{{ entry[3] }} tx{% if entry[2] >= 6 %} / {{ entry[4] }} reg.{% if entry[5] %} +{% endif %}{% endif %}{% else %}—{% endif %}</td>{% endfor %}</tr>{% endfor %}
 </tbody></table></div></details>
 {% if queue %}<p>{{ queue.waiting }} waiting at {{ queue.camera }} · {{ queue.observed }}</p>{% endif %}
+{% for estimate in queue_estimates %}
+<p>{{ estimate.camera }} · {{ estimate.queue_zone }} · {% if estimate.observed is not none %}{{ estimate.waiting }} recently tracked · Low confidence until calibrated{% else %}Queue estimate unavailable · No recent tracking updates{% endif %}</p>
+{% endfor %}
 <details><summary>Record a queue observation</summary><form method="post" action="/queue">{{ csrf() }}
 {{ field('Camera or register','camera') }}{{ field('Observed time (ISO 8601 with UTC offset)','observed') }}{{ field('People waiting','waiting','number') }}<button>Record queue observation</button></form></details>
 </section>

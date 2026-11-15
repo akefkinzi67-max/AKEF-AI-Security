@@ -9,20 +9,22 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import time
 
 from flask import Flask, Response, abort, g, redirect, render_template, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from analytics import pos_exception_signal, register_forecast
-from cameras import fetch_clip, fetch_events, origin, recording_url
+from cameras import fetch_clip, fetch_events, fetch_stats, origin, recording_url
 from monitor import save_events, timestamp
+from queue_tracking import estimates
 from commander import get_partner_xml, import_plu, tlog_csv
 from inventory import add_lot, create_order, movement, post_sale, receive_invoice, take_stock
 
 ROOT = Path(__file__).parent
 FIELDS = ("transaction_id", "line_id", "occurred_at", "kind", "sku", "quantity",
           "amount", "fuel_grade", "pump")
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def connect(path):
@@ -127,6 +129,8 @@ def create_app(config=None):
         MAX_CONTENT_LENGTH=5 * 1024 * 1024,
         SESSION_COOKIE_SECURE=os.getenv("NAVIQRA_HTTPS") == "1",
         SESSION_COOKIE_SAMESITE="Strict",
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+        SESSION_REFRESH_EACH_REQUEST=False,
     )
     if config:
         app.config.update(config)
@@ -347,6 +351,19 @@ def create_app(config=None):
             db.execute("INSERT INTO source_cameras VALUES (?,?) ON CONFLICT(source) DO UPDATE SET camera=excluded.camera",
                        (source, camera))
             detail = source
+        elif action == "camera-setup":
+            camera = required(form["camera"])
+            protocol = form["protocol"]
+            queue_zone = form.get("queue_zone", "").strip() or None
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", camera) or (
+                queue_zone and not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", queue_zone)
+            ):
+                raise ValueError("Use Frigate configuration IDs for the camera and zone.")
+            db.execute("""INSERT INTO camera_setup VALUES (?,?,?) ON CONFLICT(camera)
+                DO UPDATE SET protocol=excluded.protocol,queue_zone=excluded.queue_zone""",
+                (camera, protocol, queue_zone))
+            db.execute("DELETE FROM queue_tracks WHERE camera=?", (camera,))
+            detail = f"Camera setup for {camera}"
         elif action == "service-time":
             minutes = int(form["minutes"])
             db.execute("INSERT INTO service_settings VALUES (1,?) ON CONFLICT(id) DO UPDATE SET minutes=excluded.minutes",
@@ -365,6 +382,7 @@ def create_app(config=None):
             password = request.form["password"]
             if account and len(password) <= 128 and check_password_hash(account["password"], password):
                 session.clear()
+                session.permanent = True
                 session["username"] = account["username"]
                 session["version"] = account["session_version"]
                 return redirect("/")
@@ -373,6 +391,20 @@ def create_app(config=None):
             events = None
             clip = None
             partner_payload = None
+            if action == "camera-check":
+                if g.user is None or g.user["role"] == "employee":
+                    abort(403)
+                camera = required(request.form["camera"])
+                if not frigate:
+                    raise ValueError("Configure the Frigate service endpoint first.")
+                if not g.db.execute("SELECT 1 FROM camera_setup WHERE camera=?", (camera,)).fetchone():
+                    raise ValueError("Select a configured camera.")
+                fps = fetch_stats(frigate, os.getenv("NAVIQRA_FRIGATE_TOKEN")).get(camera)
+                if fps is None:
+                    session["message"] = f"Frigate is reachable. Camera {camera} is missing from its statistics."
+                else:
+                    session["message"] = f"Frigate is reachable. {camera} currently reports {fps:g} captured frames per second."
+                return redirect("/#cameras")
             if action == "save-clip":
                 if g.user is None or g.user["role"] == "employee":
                     abort(403)
@@ -468,6 +500,7 @@ def create_app(config=None):
                         GROUP BY source,transaction_id,kind ORDER BY MAX(occurred_at) DESC LIMIT 30""", bounds)],
                     advice=forecast,
                     schedule=schedule,
+                    evaluated_days=validation_hours // 24,
                     forecast_error=error,
                     validation_hours=validation_hours,
                     exception_signal=signal,
@@ -505,12 +538,16 @@ def create_app(config=None):
                         LEFT JOIN cost ON cost.posting=p.id
                         WHERE p.mode<>'skip' AND s.occurred_at>=? AND s.occurred_at<?""", bounds).fetchone(),
                     camera_events=db.execute("SELECT * FROM camera_events ORDER BY occurred_at DESC LIMIT 30").fetchall(),
+                    camera_setup=db.execute("SELECT * FROM camera_setup ORDER BY camera").fetchall(),
+                    queue_estimates=estimates(db, time.time()),
                     health=db.execute("""SELECT camera,checked,CASE WHEN checked<? THEN 'Stale' ELSE state END AS state
                         FROM camera_health ORDER BY camera""", ((datetime.now(timezone.utc) -
                         timedelta(minutes=2)).isoformat(timespec="microseconds"),)).fetchall(),
                     incidents=db.execute("""SELECT i.*,e.has_clip,c.incident IS NOT NULL AS saved FROM incidents i
                         LEFT JOIN incident_clips c ON c.incident=i.id
                         LEFT JOIN camera_events e ON e.id=i.event_id ORDER BY i.reviewed IS NOT NULL,i.id DESC LIMIT 50""").fetchall(),
+                    delivery=db.execute("""SELECT incident,attempts,delivered,error FROM alert_delivery
+                        ORDER BY incident DESC LIMIT 15""").fetchall(),
                     queue=db.execute("""SELECT * FROM queue_observations WHERE observed<=? AND observed>=?
                         ORDER BY observed DESC LIMIT 1""", (timestamp(), (datetime.now(timezone.utc) -
                         timedelta(minutes=5)).isoformat(timespec="microseconds"))).fetchone(),

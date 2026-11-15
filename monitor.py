@@ -5,6 +5,8 @@ import os
 import time
 
 from cameras import fetch_events, fetch_stats, origin
+from notifications import deliver
+from queue_tracking import start_subscription
 
 
 def timestamp():
@@ -68,10 +70,21 @@ def main():
     token = os.getenv("NAVIQRA_FRIGATE_TOKEN")
     expected = {name.strip() for name in os.getenv("NAVIQRA_EXPECTED_CAMERAS", "").split(",") if name.strip()}
     restricted = {name.strip() for name in os.getenv("NAVIQRA_RESTRICTED_ZONES", "").split(",") if name.strip()}
-    while True:
-        with closing(connect(app.config["DATABASE"])) as db:
-            poll(db, base, token, expected, restricted)
-        time.sleep(30)
+    subscriber = start_subscription(connect, app.config["DATABASE"])
+    webhook = os.getenv("NAVIQRA_ALERT_WEBHOOK")
+    try:
+        while True:
+            with closing(connect(app.config["DATABASE"])) as db:
+                configured = {row[0] for row in db.execute("SELECT camera FROM camera_setup")}
+                poll(db, base, token, expected | configured, restricted)
+                if webhook:
+                    deliver(db, webhook, os.getenv("NAVIQRA_ALERT_TOKEN", ""),
+                            os.getenv("NAVIQRA_ALERT_STATION_ID", ""))
+            time.sleep(30)
+    finally:
+        if subscriber:
+            subscriber.loop_stop()
+            subscriber.disconnect()
 
 
 if __name__ == "__main__":
