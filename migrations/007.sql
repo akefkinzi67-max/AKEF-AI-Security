@@ -1,0 +1,1 @@
+CREATE TABLE login_limits(client TEXT PRIMARY KEY, started INTEGER NOT NULL, tries INTEGER NOT NULL);

@@ -1,4 +1,4 @@
-param([switch]$SmokeTest)
+param([switch]$SmokeTest, [switch]$PilotSmokeTest)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -55,6 +55,13 @@ $frigateToken.Width = 455
 $frigateToken.UseSystemPasswordChar = $true
 $form.Controls.Add($frigateToken)
 $directory = Join-Path $PSScriptRoot 'data'
+$url = 'http://127.0.0.1:8080/'
+$listen = '127.0.0.1:8080'
+if ($PilotSmokeTest) {
+    $directory = Join-Path ([IO.Path]::GetTempPath()) ('naviqra-pilot-' + [guid]::NewGuid().ToString('N'))
+    $url = 'http://127.0.0.1:28687/'
+    $listen = '127.0.0.1:28687'
+}
 $secretsFile = Join-Path $directory 'windows-setup.json'
 if (Test-Path -LiteralPath $secretsFile) {
     $previous = Get-Content -LiteralPath $secretsFile -Raw | ConvertFrom-Json
@@ -62,9 +69,15 @@ if (Test-Path -LiteralPath $secretsFile) {
 }
 $open.Add_Click({
     try {
-        $page = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8080/' -TimeoutSec 2
+        $page = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2
         if (-not $page.Content.Contains('<title>NAVIQRA Gas Station AI Management</title>')) { throw 'Different local service.' }
-        Start-Process 'http://127.0.0.1:8080/'
+        if ($page.Content.Contains('Set up your station')) {
+            $saved = Get-Content -LiteralPath $secretsFile -Raw | ConvertFrom-Json
+            $tokenBox.Text = [Net.NetworkCredential]::new('', (ConvertTo-SecureString $saved.token)).Password
+            $tokenBox.Visible = $true
+            $status.Text = 'Copy this setup token into the browser wizard, then create the owner account.'
+        }
+        Start-Process $url
     } catch { $status.Text = 'NAVIQRA is not running on local port 8080. Use Install and open NAVIQRA.' }
 })
 
@@ -97,8 +110,13 @@ $install.Add_Click({
             }
         }
         $shell = (Get-Process -Id $PID).Path
-        $installer = Start-Process -FilePath $shell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','install-station.ps1' -WindowStyle Hidden -PassThru -Wait
-        if ($installer.ExitCode -ne 0) { throw 'Dependency setup failed. Check the internet connection and retry.' }
+        $manifest = Join-Path $PSScriptRoot '.venv/naviqra-requirements.sha256'
+        $requirementsHash = (Get-FileHash -LiteralPath 'requirements.txt' -Algorithm SHA256).Hash
+        if (-not (Test-Path -LiteralPath $manifest) -or (Get-Content -LiteralPath $manifest -Raw).Trim() -ne $requirementsHash) {
+            $installer = Start-Process -FilePath $shell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','install-station.ps1' -WindowStyle Hidden -PassThru -Wait
+            if ($installer.ExitCode -ne 0) { throw 'Dependency setup failed. Check the internet connection and retry.' }
+            Set-Content -LiteralPath $manifest -Value $requirementsHash -Encoding ascii
+        }
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
         $saved = if (Test-Path -LiteralPath $secretsFile) {
             Get-Content -LiteralPath $secretsFile -Raw | ConvertFrom-Json
@@ -131,9 +149,8 @@ $install.Add_Click({
         $env:NAVIQRA_FRIGATE_URL = $nextOrigin
         if ($nextToken) { $env:NAVIQRA_FRIGATE_TOKEN = [Net.NetworkCredential]::new('', (ConvertTo-SecureString $nextToken)).Password }
         $env:NAVIQRA_DB = Join-Path $directory 'station.sqlite3'
-        $url = 'http://127.0.0.1:8080/'
-        $waitress = Join-Path $PSScriptRoot '.venv/Scripts/waitress-serve.exe'
-        $started = Start-Process -FilePath $waitress -ArgumentList '--listen=127.0.0.1:8080','--call','station:create_app' -WindowStyle Hidden -PassThru
+        $started = Start-Process -FilePath $python -ArgumentList '-m','waitress',"--listen=$listen",'--call','station:create_app' -WindowStyle Hidden -PassThru
+        if ($PilotSmokeTest) { $script:pilotProcess = $started }
         $ready = $null
         for ($attempt = 0; $attempt -lt 12; $attempt++) {
             Start-Sleep -Milliseconds 400
@@ -154,7 +171,10 @@ $install.Add_Click({
             $tokenBox.Text = $env:NAVIQRA_SETUP_TOKEN
             $tokenBox.Visible = $true
         } else { $status.Text = 'NAVIQRA is running. Sign in to your station.' }
-        Start-Process $url
+        if ($PilotSmokeTest) {
+            $script:pilotPython = $python
+            $script:pilotToken = $env:NAVIQRA_SETUP_TOKEN
+        } else { Start-Process $url }
     } catch {
         $status.Text = $_.Exception.Message
         $install.Enabled = $true
@@ -162,7 +182,47 @@ $install.Add_Click({
         Remove-Item Env:NAVIQRA_SECRET,Env:NAVIQRA_SETUP_TOKEN,Env:NAVIQRA_FRIGATE_TOKEN -ErrorAction SilentlyContinue
     }
 })
-if ($SmokeTest) {
+if ($PilotSmokeTest) {
+    try {
+        $form.Show()
+        $install.PerformClick()
+        if (-not $script:pilotToken) { throw $status.Text }
+        $env:NAVIQRA_SETUP_TOKEN = $script:pilotToken
+        & $script:pilotPython pilot_http.py seed --base $url
+        if ($LASTEXITCODE -ne 0) { throw 'Windows first-run station setup failed.' }
+        $active = Join-Path $directory 'station.sqlite3'
+        $backedUp = Join-Path $directory 'pilot-backup.sqlite3'
+        $restored = Join-Path $directory 'pilot-restored.sqlite3'
+        & $script:pilotPython backup.py $active $backedUp
+        if ($LASTEXITCODE -ne 0) { throw 'Windows Pilot backup failed.' }
+        & $script:pilotPython backup.py $backedUp $restored
+        if ($LASTEXITCODE -ne 0) { throw 'Windows Pilot restore failed.' }
+        Stop-Process -InputObject $script:pilotProcess
+        $script:pilotProcess.WaitForExit()
+        $pilotSettings = Get-Content -LiteralPath $secretsFile -Raw | ConvertFrom-Json
+        $env:NAVIQRA_SECRET = [Net.NetworkCredential]::new('', (ConvertTo-SecureString $pilotSettings.secret)).Password
+        $env:NAVIQRA_DB = $restored
+        $script:pilotProcess = Start-Process -FilePath $script:pilotPython -ArgumentList '-m','waitress',"--listen=$listen",'--call','station:create_app' -WindowStyle Hidden -PassThru
+        $ready = $false
+        for ($attempt = 0; $attempt -lt 12; $attempt++) {
+            Start-Sleep -Milliseconds 400
+            if ($script:pilotProcess.HasExited) { break }
+            try {
+                $page = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2
+                if ($page.Content.Contains('Sign in')) { $ready = $true; break }
+            } catch { }
+        }
+        if (-not $ready) { throw 'Windows Pilot could not open the restored station.' }
+        & $script:pilotPython pilot_http.py verify --base $url
+        if ($LASTEXITCODE -ne 0) { throw 'Windows Pilot restore data verification failed.' }
+    } finally {
+        if ($script:pilotProcess -and -not $script:pilotProcess.HasExited) {
+            Stop-Process -InputObject $script:pilotProcess
+        }
+        $form.Dispose()
+        Remove-Item Env:NAVIQRA_SETUP_TOKEN,Env:NAVIQRA_SECRET,Env:NAVIQRA_DB -ErrorAction SilentlyContinue
+    }
+} elseif ($SmokeTest) {
     if ($form.Controls.Count -lt 8 -or $install.Text -ne 'Install and open NAVIQRA') {
         throw 'Station setup controls are missing.'
     }

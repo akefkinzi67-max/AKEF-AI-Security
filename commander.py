@@ -10,6 +10,7 @@ from xml.etree import ElementTree
 from cameras import NoRedirect
 
 LIMIT = 5 * 1024 * 1024
+REQUIRED_TLOG_COLUMNS = {"transaction_id", "line_id", "occurred_at", "kind", "quantity", "amount"}
 
 
 def tlog_csv(payload, mapping, fields):
@@ -21,8 +22,11 @@ def tlog_csv(payload, mapping, fields):
     try:
         document = ElementTree.fromstring(text)
         namespaces = mapping.get("namespaces", {})
-        if set(mapping["fields"]) - set(fields):
+        configured = set(mapping["fields"])
+        if configured - set(fields):
             raise ValueError("The T-Log map contains unknown output columns.")
+        if REQUIRED_TLOG_COLUMNS - configured:
+            raise ValueError("The T-Log map is missing one or more required output columns.")
         output = StringIO()
         writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
@@ -59,7 +63,7 @@ def import_plu(db, payload, mapping, required):
         raise ValueError("The PLU export contains duplicate headers.")
     try:
         sku, name, barcode = (mapping[key] for key in ("sku", "name", "barcode"))
-        if not {sku, name, barcode}.issubset(headers):
+        if len({sku, name, barcode}) != 3 or not {sku, name, barcode}.issubset(headers):
             raise ValueError("The PLU export does not match the configured columns.")
     except (KeyError, TypeError):
         raise ValueError("The PLU column map is invalid.") from None

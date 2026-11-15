@@ -12,11 +12,13 @@ def register_forecast(rows, tz, service_minutes, *, include_profile=False):
         counts[stamp.hour] += 1
 
     profiles, total_error, predictions = [], 0, 0
+    hourly_coverage = Counter()
     for weekday in sorted(days):
         history = days[weekday]
         cumulative = Counter()
         for index, day in enumerate(sorted(history)):
             counts = history[day]
+            hourly_coverage.update((weekday, hour) for hour in counts)
             if index >= 3:
                 total_error += sum(abs(cumulative[hour] / index - counts[hour]) for hour in range(24))
                 predictions += 24
@@ -35,7 +37,7 @@ def register_forecast(rows, tz, service_minutes, *, include_profile=False):
     )[:10]
     mae = round(total_error / predictions, 2) if predictions else None
     if include_profile:
-        indexed = {(row[0], row[1]): row for row in profiles}
+        indexed = {(row[0], row[1]): (*row, hourly_coverage[(row[0], row[1])]) for row in profiles}
         schedule = [[indexed.get((weekday, hour)) for hour in range(24)] for weekday in range(7)]
         return peak_hours, mae, predictions, schedule
     return peak_hours, mae, predictions

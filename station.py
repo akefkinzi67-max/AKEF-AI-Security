@@ -1,4 +1,5 @@
 import csv
+import hashlib
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -24,13 +25,25 @@ from inventory import add_lot, create_order, movement, post_sale, receive_invoic
 ROOT = Path(__file__).parent
 FIELDS = ("transaction_id", "line_id", "occurred_at", "kind", "sku", "quantity",
           "amount", "fuel_grade", "pump")
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+
+
+class FuelQuantity:
+    def __init__(self):
+        self.total = Decimal(0)
+
+    def step(self, quantity):
+        self.total += Decimal(quantity)
+
+    def finalize(self):
+        return f"{self.total:,.3f}"
 
 
 def connect(path):
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
+    db.create_aggregate("fuel_quantity", 1, FuelQuantity)
     return db
 
 
@@ -123,10 +136,13 @@ def report_window(args, tz):
 
 def create_app(config=None):
     app = Flask(__name__)
+    app.jinja_env.filters["usd"] = lambda cents: f"${Decimal(cents) / 100:,.2f}"
     app.config.update(
         DATABASE=os.getenv("NAVIQRA_DB", str(ROOT / "data" / "station.sqlite3")),
         SECRET_KEY=os.getenv("NAVIQRA_SECRET"),
         MAX_CONTENT_LENGTH=5 * 1024 * 1024,
+        TRUSTED_HOSTS=[host.strip() for host in os.getenv(
+            "NAVIQRA_TRUSTED_HOSTS", "localhost,127.0.0.1,[::1]").split(",") if host.strip()],
         SESSION_COOKIE_SECURE=os.getenv("NAVIQRA_HTTPS") == "1",
         SESSION_COOKIE_SAMESITE="Strict",
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
@@ -155,7 +171,7 @@ def create_app(config=None):
                               (session.get("username"), session.get("version", 0))).fetchone()
         if request.method == "POST":
             csrf = session.get("csrf", "")
-            if not csrf or not secrets.compare_digest(csrf, request.form.get("csrf", "")):
+            if not csrf or not secrets.compare_digest(csrf.encode(), request.form.get("csrf", "").encode()):
                 abort(403)
         session.setdefault("csrf", secrets.token_urlsafe(32))
 
@@ -176,6 +192,15 @@ def create_app(config=None):
         if "db" in g:
             g.db.close()
 
+    @app.errorhandler(sqlite3.OperationalError)
+    def database_unavailable(error):
+        code = getattr(error, "sqlite_errorcode", 0) or 0
+        if (code & 255) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            return Response("Station database is busy. Try again shortly.", status=503,
+                            headers={"Retry-After": "5"}, mimetype="text/plain")
+        app.logger.error("Station database operation failed (SQLite code %s).", code)
+        return Response("Station database operation failed.", status=500, mimetype="text/plain")
+
     def audit(action, detail, actor=None):
         g.db.execute("INSERT INTO audit(actor,action,detail) VALUES (?,?,?)",
                      (actor or g.user["username"], action, detail))
@@ -193,7 +218,7 @@ def create_app(config=None):
         db = g.db
         if action == "setup":
             expected = os.getenv("NAVIQRA_SETUP_TOKEN", "")
-            if len(expected) < 24 or not secrets.compare_digest(expected, request.form["token"]):
+            if len(expected) < 24 or not secrets.compare_digest(expected.encode(), request.form["token"].encode()):
                 abort(403)
             if db.execute("SELECT 1 FROM station").fetchone():
                 abort(409)
@@ -243,6 +268,9 @@ def create_app(config=None):
         elif action == "movement":
             sku = required(form["sku"])
             warehouse = required(form["warehouse"])
+            if db.execute("SELECT 1 FROM products CROSS JOIN warehouses WHERE sku=? AND code=?",
+                          (sku, warehouse)).fetchone() is None:
+                raise ValueError("Select an existing SKU and warehouse.")
             reason = form["reason"]
             quantity = int(form["quantity"])
             if reason not in ("Receive", "Damage", "Customer return", "Vendor return", "Count", "Transfer"):
@@ -294,6 +322,12 @@ def create_app(config=None):
             detail = required(form["name"])
             db.execute("INSERT INTO suppliers(name,contact) VALUES (?,?)",
                        (detail, form.get("contact", "").strip()[:250]))
+        elif action == "update-supplier":
+            detail = required(form["name"])
+            changed = db.execute("UPDATE suppliers SET name=?,contact=? WHERE id=?",
+                (detail, form.get("contact", "").strip()[:250], int(form["supplier"]))).rowcount
+            if not changed:
+                raise ValueError("Select an existing supplier.")
         elif action == "invoice":
             detail = receive_invoice(db, form, g.user["username"], required)
         elif action == "purchase":
@@ -377,10 +411,24 @@ def create_app(config=None):
     @app.post("/<action>")
     def mutate(action):
         if action == "login":
+            now = int(time.time())
+            client = hashlib.sha256((request.remote_addr or "local").encode()).hexdigest()
+            with g.db:
+                g.db.execute("BEGIN IMMEDIATE")
+                g.db.execute("DELETE FROM login_limits WHERE started<=?", (now - 300,))
+                limit = g.db.execute("SELECT started,tries FROM login_limits WHERE client=?", (client,)).fetchone()
+                if not limit or limit["tries"] < 10:
+                    g.db.execute("""INSERT INTO login_limits VALUES (?,?,1)
+                        ON CONFLICT(client) DO UPDATE SET tries=tries+1""", (client, now))
+            if limit and limit["tries"] >= 10:
+                page, _ = dashboard("Too many sign-in attempts. Try again in a few minutes.")
+                return page, 429, {"Retry-After": str(300 - (now - limit["started"]))}
             account = g.db.execute("SELECT * FROM users WHERE username=? AND active=1",
                                    (request.form["username"],)).fetchone()
             password = request.form["password"]
             if account and len(password) <= 128 and check_password_hash(account["password"], password):
+                with g.db:
+                    g.db.execute("DELETE FROM login_limits WHERE client=?", (client,))
                 session.clear()
                 session.permanent = True
                 session["username"] = account["username"]
@@ -445,6 +493,8 @@ def create_app(config=None):
                     audit(action, message)
             session["message"] = message
             return redirect("/")
+        except OverflowError:
+            return dashboard("A numeric value or timestamp is outside the supported range.", 400)
         except (ValueError, csv.Error, ZoneInfoNotFoundError) as error:
             return dashboard(str(error), 400)
         except sqlite3.IntegrityError:
@@ -485,7 +535,7 @@ def create_app(config=None):
                     """, (since.isoformat(timespec="microseconds"),)), tz)
                 context.update(
                     fuel=db.execute("""SELECT fuel_grade,pump,SUM(cents) AS cents,
-                        SUM(CAST(quantity AS REAL)) AS gallons FROM sales
+                        fuel_quantity(quantity) AS gallons FROM sales
                         WHERE fuel_grade<>'' AND kind IN ('Sale','Refund') AND occurred_at>=? AND occurred_at<?
                         GROUP BY fuel_grade,pump""", bounds).fetchall(),
                     totals=db.execute("""SELECT COUNT(*) AS lines, SUM(cents) AS cents,
@@ -509,6 +559,15 @@ def create_app(config=None):
                         GROUP BY day ORDER BY day DESC LIMIT 7""", bounds).fetchall()[::-1],
                     history=db.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 30").fetchall(),
                     suppliers=db.execute("SELECT * FROM suppliers ORDER BY name").fetchall(),
+                    replenishment={(row["sku"], row["warehouse"]): row["units"] for row in db.execute("""
+                        WITH received AS (
+                            SELECT r.order_id,l.sku,SUM(l.quantity) AS units FROM order_receipts r
+                            JOIN invoice_lines l ON l.invoice=r.invoice GROUP BY r.order_id,l.sku)
+                        SELECT p.sku,o.warehouse,SUM(p.quantity-COALESCE(r.units,0)) AS units
+                        FROM purchase_orders o JOIN purchase_order_lines p ON p.order_id=o.id
+                        LEFT JOIN received r ON r.order_id=o.id AND r.sku=p.sku
+                        WHERE o.status='Open' GROUP BY p.sku,o.warehouse
+                    """)},
                     orders=db.execute("""SELECT o.*,s.name,
                         (SELECT COUNT(*) FROM order_receipts r WHERE r.order_id=o.id) AS receipts,
                         (SELECT SUM(quantity) FROM purchase_order_lines p WHERE p.order_id=o.id) AS ordered_units,
@@ -523,7 +582,8 @@ def create_app(config=None):
                         ORDER BY expires,id LIMIT 50""", ((today + timedelta(days=30)).isoformat(),)).fetchall(),
                     pending=db.execute("""SELECT s.* FROM sales s LEFT JOIN stock_postings p
                         USING(source,transaction_id,line_id) WHERE p.id IS NULL AND s.fuel_grade=''
-                        ORDER BY s.occurred_at DESC LIMIT 50""").fetchall(),
+                        AND s.occurred_at>=? AND s.occurred_at<?
+                        ORDER BY s.occurred_at DESC,s.source,s.transaction_id,s.line_id LIMIT 51""", bounds).fetchall(),
                     postings=db.execute("""SELECT p.id,p.mode,p.source,p.transaction_id,p.line_id,s.sku
                         FROM stock_postings p JOIN sales s USING(source,transaction_id,line_id)
                         ORDER BY p.id DESC LIMIT 30""").fetchall(),

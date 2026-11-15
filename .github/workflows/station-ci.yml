@@ -22,6 +22,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows setup form initialization failed.' }
           ./install-station.ps1
           ./.venv/Scripts/python.exe -m unittest -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows tests failed.' }
+          powershell.exe -NoProfile -STA -File ./setup-windows.ps1 -PilotSmokeTest
+          if ($LASTEXITCODE -ne 0) { throw 'Windows first-run exercise failed.' }
   verify:
     runs-on: ubuntu-latest
     env:
@@ -50,10 +53,18 @@ jobs:
           docker compose up --build -d
           wait_for_station
           curl --fail --silent --show-error -o /dev/null http://127.0.0.1:8080/static/station.css
+          python pilot_http.py seed
           docker compose exec -T station python backup.py /app/data/station.sqlite3 /app/data/ci-backup.sqlite3
           docker compose exec -T station python backup.py /app/data/ci-backup.sqlite3 /app/data/ci-restored.sqlite3
-          docker compose restart station
-          wait_for_station
+          printf 'services:\n  station:\n    environment:\n      NAVIQRA_DB: /app/data/ci-restored.sqlite3\n' > "$RUNNER_TEMP/pilot-restore.yaml"
+          docker compose -f compose.yaml -f "$RUNNER_TEMP/pilot-restore.yaml" up -d --force-recreate
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:8080/ | grep -q 'Sign in'; then
+              break
+            fi
+            sleep 1
+          done
+          python pilot_http.py verify
       - name: Clean up the isolated test deployment
         if: always()
         run: docker compose down -v

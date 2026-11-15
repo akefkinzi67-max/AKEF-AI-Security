@@ -133,6 +133,8 @@ class StationTest(unittest.TestCase):
             self.assertEqual(hours, (len(counts) - 3) * 24)
             self.assertIsNone(schedule[0][10])
             self.assertEqual(schedule[3][10][2], len(counts))
+            self.assertEqual(schedule[3][10][6], len(counts))
+            self.assertEqual(schedule[3][11][6], 0)
         self.assertIn(b"Evidence is limited", self.client.get("/").data)
 
     def test_camera_setup_check_and_queue_track_lifecycle(self):
@@ -241,12 +243,20 @@ class StationTest(unittest.TestCase):
             self.assertEqual(tuple(db.execute("SELECT remaining,unit_cents FROM lots").fetchone()), (8, None))
 
     def test_synthetic_commander_field_maps(self):
-        payload = b"<demo><event><id>1</id><line><id>2</id></line></event></demo>"
+        payload = (b"<demo><event><id>1</id><stamp>2026-01-01T12:00:00Z</stamp>"
+                   b"<line><id>2</id><kind>Sale</kind><qty>1</qty><amount>2.50</amount></line></event></demo>")
         mapping = {"events": "event", "lines": "line", "fields": {
             "transaction_id": {"scope": "event", "path": "id"},
             "line_id": {"scope": "line", "path": "id"},
+            "occurred_at": {"scope": "event", "path": "stamp"},
+            "kind": {"scope": "line", "path": "kind"},
+            "quantity": {"scope": "line", "path": "qty"},
+            "amount": {"scope": "line", "path": "amount"},
         }}
         self.assertIn("1,2,", tlog_csv(payload, mapping, FIELDS))
+        incomplete = dict(mapping, fields={"transaction_id": mapping["fields"]["transaction_id"]})
+        with self.assertRaisesRegex(ValueError, "required output columns"):
+            tlog_csv(payload, incomplete, FIELDS)
         with self.assertRaises(ValueError):
             tlog_csv(b'<!DOCTYPE demo [<!ENTITY x "x">]>' + payload, mapping, FIELDS)
         with closing(connect(self.path)) as db, db:
@@ -262,6 +272,29 @@ class StationTest(unittest.TestCase):
             self.assertEqual(get_partner_xml("https://fixture.invalid/report", "Synthetic credential"), payload)
             request = opener.return_value.open.call_args.args[0]
             self.assertEqual(request.get_method(), "GET")
+
+    def test_unicode_csrf_rejected_and_login_throttled(self):
+        self.assertEqual(self.client.get("/", headers={"Host": "untrusted.example"}).status_code, 400)
+        self.assertEqual(self.client.post("/logout", data={"csrf": "اختبار"}).status_code, 403)
+        self.post("logout")
+        for _ in range(10):
+            self.assertEqual(self.post("login", username="missing", password="synthetic").status_code, 401)
+        throttled = self.post("login", username="owner", password="synthetic-password")
+        self.assertEqual(throttled.status_code, 429)
+        self.assertGreater(int(throttled.headers["Retry-After"]), 0)
+
+    def test_supplier_update_and_pending_report_window(self):
+        self.assertEqual(self.post("supplier", name="Before").status_code, 302)
+        self.assertEqual(self.post("update-supplier", supplier=1, name="After", contact="Synthetic").status_code, 302)
+        self.assertIn(b'name="name" value="After"', self.client.get("/").data)
+        self.assertEqual(self.post("movement", sku="missing", warehouse="A", quantity=0, reason="Count").status_code, 400)
+        self.assertEqual(self.upload(
+            "first,1,2026-01-01T18:00:00Z,Sale,WINDOW-1,1,1.00,,\n"
+            "second,1,2026-01-02T18:00:00Z,Sale,WINDOW-2,1,1.00,,\n"
+        ).status_code, 302)
+        page = self.client.get("/?start=2026-01-01&end=2026-01-01").data
+        self.assertIn(b"WINDOW-1", page)
+        self.assertNotIn(b"WINDOW-2", page)
 
     def test_frigate_simulation_and_failed_sync(self):
         with patch.dict(os.environ, NAVIQRA_FRIGATE_URL="http://127.0.0.1:28880"):
