@@ -22,7 +22,7 @@ from inventory import add_lot, create_order, movement, post_sale, receive_invoic
 ROOT = Path(__file__).parent
 FIELDS = ("transaction_id", "line_id", "occurred_at", "kind", "sku", "quantity",
           "amount", "fuel_grade", "pump")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def connect(path):
@@ -320,6 +320,16 @@ def create_app(config=None):
             if not changed:
                 raise ValueError("Select an open incident.")
             detail = f"Incident {incident} reviewed"
+        elif action == "delete-clip":
+            if g.user["role"] != "owner":
+                abort(403)
+            incident = int(form["incident"])
+            changed = db.execute("""DELETE FROM incident_clips WHERE incident=?
+                AND EXISTS (SELECT 1 FROM incidents WHERE id=? AND reviewed IS NOT NULL)""",
+                (incident, incident)).rowcount
+            if not changed:
+                raise ValueError("Select a reviewed incident with a saved clip.")
+            detail = f"Saved clip removed for incident {incident}"
         elif action == "queue":
             camera = required(form["camera"])
             stamp = datetime.fromisoformat(form["observed"])
@@ -446,7 +456,9 @@ def create_app(config=None):
                         SUM(CAST(quantity AS REAL)) AS gallons FROM sales
                         WHERE fuel_grade<>'' AND kind IN ('Sale','Refund') AND occurred_at>=? AND occurred_at<?
                         GROUP BY fuel_grade,pump""", bounds).fetchall(),
-                    totals=db.execute("""SELECT COUNT(*) AS lines, SUM(cents) AS cents
+                    totals=db.execute("""SELECT COUNT(*) AS lines, SUM(cents) AS cents,
+                        SUM(CASE WHEN fuel_grade<>'' THEN cents ELSE 0 END) AS fuel_cents,
+                        SUM(CASE WHEN fuel_grade='' THEN cents ELSE 0 END) AS store_cents
                         FROM sales WHERE kind IN ('Sale','Refund') AND occurred_at>=? AND occurred_at<?""", bounds).fetchone(),
                     exceptions=[dict(row, clip=recording_url(frigate, row["camera"], row["occurred_at"])
                                      if frigate and row["camera"] else None) for row in db.execute("""
@@ -493,7 +505,9 @@ def create_app(config=None):
                         LEFT JOIN cost ON cost.posting=p.id
                         WHERE p.mode<>'skip' AND s.occurred_at>=? AND s.occurred_at<?""", bounds).fetchone(),
                     camera_events=db.execute("SELECT * FROM camera_events ORDER BY occurred_at DESC LIMIT 30").fetchall(),
-                    health=db.execute("SELECT * FROM camera_health ORDER BY camera").fetchall(),
+                    health=db.execute("""SELECT camera,checked,CASE WHEN checked<? THEN 'Stale' ELSE state END AS state
+                        FROM camera_health ORDER BY camera""", ((datetime.now(timezone.utc) -
+                        timedelta(minutes=2)).isoformat(timespec="microseconds"),)).fetchall(),
                     incidents=db.execute("""SELECT i.*,e.has_clip,c.incident IS NOT NULL AS saved FROM incidents i
                         LEFT JOIN incident_clips c ON c.incident=i.id
                         LEFT JOIN camera_events e ON e.id=i.event_id ORDER BY i.reviewed IS NOT NULL,i.id DESC LIMIT 50""").fetchall(),

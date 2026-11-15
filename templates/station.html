@@ -39,6 +39,8 @@
 <button>Filter reports</button><a href="/">Clear dates</a>
 </form>
 <div class="metrics"><section><h2>Net Imported Sales</h2><strong>{{ dollars(totals.cents) if totals.lines else 'No sales data' }}</strong></section>
+<section><h2>Net Fuel Sales</h2><strong>{{ dollars(totals.fuel_cents) if totals.lines else 'No sales data' }}</strong></section>
+<section><h2>Net Store Sales</h2><strong>{{ dollars(totals.store_cents) if totals.lines else 'No sales data' }}</strong></section>
 <section><h2>Imported Sale and Refund Lines</h2><strong>{{ totals.lines }}</strong></section>
 <section><h2>Posted Merchandise Gross Profit</h2><strong>{{ dollars(margin.revenue - margin.cogs) if margin.lines and not margin.unknown else 'Unavailable' }}</strong>
 <p>{{ margin.lines }} posted lines{% if margin.unknown %} · {{ margin.unknown }} allocations without cost{% endif %}</p></section></div>
@@ -74,6 +76,8 @@
 {% elif incident.has_clip and frigate %}<form method="post" action="/save-clip">{{ csrf() }}<input type="hidden" name="incident" value="{{ incident.id }}"><button>Save Frigate clip</button></form>{% endif %}
 {% if not incident.reviewed %}<form method="post" action="/review-incident">{{ csrf() }}<input type="hidden" name="incident" value="{{ incident.id }}"><button>Mark incident reviewed</button></form>
 {% else %}<p>Reviewed by {{ incident.reviewer }} · {{ incident.reviewed }}</p>{% endif %}
+{% if incident.saved and incident.reviewed and g.user.role == 'owner' %}
+<details><summary>Remove saved footage</summary><form method="post" action="/delete-clip">{{ csrf() }}<input type="hidden" name="incident" value="{{ incident.id }}"><button>Remove local clip</button></form></details>{% endif %}
 </details>
 {% endfor %}
 </section>
@@ -81,8 +85,8 @@
 {% for row in exceptions %}<p><b>{{ row.kind }}</b> · {{ row.transaction_id }}<br><small>{{ row.occurred_at }} · {{ row.source }}</small>{% if row.clip %}<br><a href="{{ row.clip }}" rel="noreferrer">Check recording near transaction time</a>{% endif %}</p>{% else %}<p>No POS exceptions have been imported.</p>{% endfor %}
 {% if frigate %}<form method="post" action="/source-camera">{{ csrf() }}{{ field('POS source identifier for this register','source') }}{{ field('Frigate camera name','camera') }}<button>Save camera mapping</button></form>{% endif %}</section>
 <section><h2>Business Guardian</h2>
-{% for camera in health if camera.state == 'Offline' %}
-<p>Check {{ camera.camera }} before relying on footage. The last health observation was {{ camera.checked }}.</p>
+{% for camera in health if camera.state in ('Offline', 'Stale') %}
+<p>Check {{ camera.camera }} before relying on footage. Health status: {{ camera.state | lower }} as of {{ camera.checked }}.</p>
 {% endfor %}
 {% if incidents | selectattr('reviewed', 'none') | list %}<p>Review open security incidents and preserve applicable footage before its Frigate retention expires.</p>{% endif %}
 {% if exception_signal %}{% set day, count, total, current, baseline = exception_signal %}

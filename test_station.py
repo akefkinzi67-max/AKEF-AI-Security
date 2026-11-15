@@ -239,6 +239,14 @@ class StationTest(unittest.TestCase):
         self.assertEqual(response.data, clip[:8])
         response.close()
         self.assertEqual(self.post("review-incident", incident=2).status_code, 302)
+        self.assertEqual(self.post("delete-clip", incident=2).status_code, 302)
+        self.assertEqual(self.client.get("/incidents/2/clip.mp4").status_code, 404)
+        event = ("test-e", "cashier", "person", "2026-01-01T02:00:00Z", "counter", 1)
+        with closing(connect(self.path)) as db:
+            with patch("monitor.fetch_stats", return_value={"cashier": 5}), patch("monitor.fetch_events", return_value=[event]):
+                for _ in range(2):
+                    poll(db, "http://fixture.invalid", None, {"cashier"}, {"counter"})
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM incidents WHERE category='Restricted zone'").fetchone()[0], 1)
 
 
 if __name__ == "__main__":

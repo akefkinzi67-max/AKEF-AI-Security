@@ -24,4 +24,6 @@ Assign each register-specific POS source to its camera. A POS recording link req
 
 Queue observation accepts a camera or register identifier, a timezone-aware timestamp and a headcount. Recent observations are shown for five minutes. An automated counting adapter must be calibrated for the station camera and queue zone before use.
 
+Set NAVIQRA_RESTRICTED_ZONES to the comma-delimited names of explicitly designated Frigate zones. The monitor opens one review incident per tracked person or vehicle event in these zones. Review and record the outcome before taking action. Owners can remove local footage from reviewed incidents. The audit and incident records remain, and prior backups follow the station's retention policy.
+
 [Frigate camera configuration](https://docs.frigate.video/configuration/cameras/) · [Events API](https://docs.frigate.video/integrations/api/events-events-get/) · [Recording clip API](https://docs.frigate.video/integrations/api/recording-clip-camera-name-start-start-ts-end-end-ts-clip-mp-4-get/)

@@ -28,7 +28,7 @@ def observation(db, camera, healthy, checked, category):
             VALUES (?,?,?,?)""", (camera, category, "Three consecutive unsuccessful health checks.", checked))
 
 
-def poll(db, base, token, expected_cameras):
+def poll(db, base, token, expected_cameras, restricted_zones=()):
     stats = events = None
     try:
         stats = fetch_stats(base, token)
@@ -49,6 +49,12 @@ def poll(db, base, token, expected_cameras):
                 observation(db, camera, stats.get(camera, 0) > 0, checked, "Camera offline")
         if events is not None:
             save_events(db, events)
+            for event_id, camera, label, started, zones, _ in events:
+                overlap = sorted(set(zones.split(", ")) & set(restricted_zones))
+                if overlap and label in ("person", "car", "truck", "motorcycle", "bus"):
+                    db.execute("""INSERT OR IGNORE INTO incidents(camera,category,detail,event_id,opened)
+                        VALUES (?,'Restricted zone',?,?,?)""",
+                        (camera, f"Review {label} detected in {', '.join(overlap)}.", event_id, started))
 
 
 def main():
@@ -61,9 +67,10 @@ def main():
     base = origin(base)
     token = os.getenv("NAVIQRA_FRIGATE_TOKEN")
     expected = {name.strip() for name in os.getenv("NAVIQRA_EXPECTED_CAMERAS", "").split(",") if name.strip()}
+    restricted = {name.strip() for name in os.getenv("NAVIQRA_RESTRICTED_ZONES", "").split(",") if name.strip()}
     while True:
         with closing(connect(app.config["DATABASE"])) as db:
-            poll(db, base, token, expected)
+            poll(db, base, token, expected, restricted)
         time.sleep(30)
 
 
