@@ -6,3 +6,10 @@ main{max-width:100rem;padding:1rem}nav+main{margin-left:11rem}h1{margin:.25rem 0
 form,label{display:grid;gap:.45rem}form{gap:.75rem}input,select,button{font:inherit;border:1px solid #3770a5;border-radius:.4rem;padding:.5rem;background:#071b32;color:inherit;min-width:0;width:100%}button{background:var(--gold);color:#151007;font-weight:700;cursor:pointer}.table{overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left}td,th{padding:.5rem;border-bottom:1px solid #173857}.gold{color:var(--gold)}.bar{display:grid;grid-template-columns:minmax(6em,1fr) 3fr minmax(5em,auto);gap:.5rem;align-items:center;margin:.5rem 0}meter{width:100%;height:1.2rem}
 @media(max-width:950px){nav{position:static;display:flex;flex-wrap:wrap;width:auto}nav+main{margin-left:0}.forms{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:620px){.metrics,.forms,.dashboard{grid-template-columns:1fr}header{flex-wrap:wrap}nav a{padding:.45rem}.bar{grid-template-columns:1fr 1fr 1fr}}
+.report-filter{display:flex;flex-wrap:wrap;align-items:end;gap:.75rem;margin-bottom:1rem}
+.report-filter button{width:auto}
+a{color:#9edaff}
+textarea{font:inherit;background:#071b32;border:1px solid #3770a5;border-radius:.4rem;color:inherit;width:100%;padding:.5rem}
+details{padding:.6rem 0;border-bottom:1px solid #173857;overflow-wrap:anywhere}
+details form{padding:.75rem 0}
+nav{max-height:calc(100vh - 6rem);overflow:auto}

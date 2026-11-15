@@ -8,7 +8,17 @@ Install Python 3.12 and create a virtual environment with `python -m venv .venv`
 
 Generate two separate values with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Set `NAVIQRA_SECRET` and `NAVIQRA_SETUP_TOKEN` in the process environment. Keep the secret stable across restarts. Start with `waitress-serve --listen=127.0.0.1:8080 --call station:create_app`. Open http://127.0.0.1:8080, initialize the station and warehouse, and sign in. Remove the setup token from the process environment for subsequent launches. Owners can add managers and employees. Managers handle stock and imports. Employees can view stock.
 
-Alternatively put the same settings in an untracked .env file and run `docker compose up --build`. This recipe binds to loopback and keeps SQLite in a named volume. The Docker recipe requires independent verification on a host with Docker.
+On Windows, `./install-station.ps1` creates the virtual environment and installs dependencies. With the environment values set, `./install-station.ps1 -Start` also starts the service.
+
+Alternatively put the same settings in an untracked .env file and run `docker compose up --build`. This recipe binds to loopback and keeps SQLite in a named volume. Keep backups outside that volume.
+
+## Purchasing and stock reconciliation
+
+Create suppliers and receive invoices with existing SKUs, whole-unit quantities, unit costs in USD, and optional expiration dates. Each supplier invoice number can be received once. Downward adjustments and sales draw from soonest-expiring lots first, then older undated lots. Transfers preserve lot cost and expiration. Opening stock and manual receipts have unknown cost unless received through an invoice.
+
+Create a purchase order with the supplier, destination and SKU quantities. An invoice can close an open order when the supplier, destination and total quantities per SKU match. Standalone invoices are supported. Open orders can be canceled. Partial fulfillment remains pending.
+
+Review normalized POS lines before posting them to inventory. For a sale, select the warehouse from which the goods physically left. A restocked refund restores the original cost layers, a refund-only posting changes revenue, and a void can reverse an unreversed sale with no prior refunds. Use Skip for already-accounted opening history and events with no inventory effect. The same imported line can be reviewed once. Posted merchandise gross profit includes only reviewed sales and adjustments; it displays as unavailable if any participating cost is unknown. Date filters use the station time zone and inclusive calendar dates.
 
 ## Sales import
 
@@ -20,7 +30,7 @@ transaction_id,line_id,occurred_at,kind,sku,quantity,amount,fuel_grade,pump
 
 Use ISO 8601 timestamps with explicit offsets, USD amounts with at most two significant fractional digits, and quantities with up to six decimal places. Use Sale or Refund with signed amounts and quantities, or Void or No Sale with zero amount and quantity. Fuel quantity is in US gallons. Leave fuel grade and pump blank for merchandise. Use a stable source identifier and transaction ID unique within that source. Namespace reused register transaction numbers before conversion. Each line ID must be stable within its transaction. Duplicate records are skipped and conflicting records roll back the entire upload. Each upload is limited to 5 MiB. Remove payment credentials, cardholder data and personal identifiers before conversion.
 
-The import format is NAVIQRA's normalized contract. Native Commander T-Log and PLU mappings require sanitized vendor exports and field documentation. Verifone documents C-Site T-Log API availability for Petro Partner accounts. Authorized access, the API contract and a test site are required before implementing and verifying the C-Site adapter. See [Verifone release notes](https://verifone.cloud/sites/default/files/inline-files/%5Bcurrent-date%3Ahtml_month%5D/C_SiteManagementReleaseNotes.Nov2025.pdf).
+The import format is NAVIQRA's normalized contract. See [station integrations](INTEGRATIONS.md) to configure the mapping-based Commander adapters, optional partner transport and Frigate.
 
 ## Backup, restore and update
 
@@ -30,6 +40,6 @@ Before updating, verify the backup and test the new version with a restored copy
 
 ## Scope and verification
 
-Run `python -m unittest -v` for synthetic verification of setup and roles, stock transfers, backup integrity, CSV deduplication and rollback, fuel totals, report exports and hourly estimates. The advisor uses observed transaction days, assumes two minutes of service per visit, and displays estimates only after three observed dates for a weekday. Partial imports can bias estimates. Treat the result as a planning input.
+Run `python -m unittest -v` for synthetic integration verification. The advisor uses observed transaction days and a configurable service time (two minutes by default) and displays estimates only after three observed dates for a weekday. Partial imports can bias estimates. Treat the result as a planning input.
 
-Pending: vendor-native file formats, C-Site, ATG, camera integration and event correlation, Business Guardian, suppliers and purchasing, expiry lots, costs and margins, date filters, remote access, installer and browser/device acceptance. Do not use this review build for production station operations.
+Pending: authorized field maps and vendor acceptance, ATG, camera device and retention acceptance, purchase-order approval workflow, queue measurement, advanced anomaly modeling, secure remote deployment and full station acceptance. Do not use this review build for production station operations.

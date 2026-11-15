@@ -9,7 +9,7 @@ def copy_database(source, target):
     with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as original:
         if original.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise RuntimeError("Source failed SQLite integrity check.")
-        if original.execute("PRAGMA user_version").fetchone()[0] != 1:
+        if original.execute("PRAGMA user_version").fetchone()[0] not in (1, 2):
             raise RuntimeError("Source schema version is unsupported.")
         target.touch(exist_ok=False)
         try:

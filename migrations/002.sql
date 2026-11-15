@@ -1,0 +1,15 @@
+CREATE TABLE suppliers(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, contact TEXT NOT NULL);
+CREATE TABLE invoices(id INTEGER PRIMARY KEY, supplier INTEGER NOT NULL REFERENCES suppliers, number TEXT NOT NULL, purchased TEXT NOT NULL, warehouse TEXT NOT NULL REFERENCES warehouses, UNIQUE(supplier,number));
+CREATE TABLE invoice_lines(invoice INTEGER NOT NULL REFERENCES invoices, line INTEGER NOT NULL, sku TEXT NOT NULL REFERENCES products, quantity INTEGER NOT NULL CHECK(quantity>0), unit_cents INTEGER NOT NULL CHECK(unit_cents>=0), expires TEXT, PRIMARY KEY(invoice,line));
+CREATE TABLE lots(id INTEGER PRIMARY KEY, sku TEXT NOT NULL REFERENCES products, warehouse TEXT NOT NULL REFERENCES warehouses, remaining INTEGER NOT NULL CHECK(remaining>=0), unit_cents INTEGER, expires TEXT, invoice INTEGER REFERENCES invoices);
+INSERT INTO lots(sku,warehouse,remaining) SELECT sku,warehouse,SUM(delta) FROM movements GROUP BY sku,warehouse HAVING SUM(delta)>0;
+CREATE INDEX lots_lookup ON lots(sku,warehouse,expires,id) WHERE remaining>0;
+CREATE TABLE stock_postings(id INTEGER PRIMARY KEY, source TEXT NOT NULL, transaction_id TEXT NOT NULL, line_id TEXT NOT NULL, warehouse TEXT REFERENCES warehouses, mode TEXT NOT NULL, original INTEGER REFERENCES stock_postings, revenue_cents INTEGER NOT NULL, UNIQUE(source,transaction_id,line_id), FOREIGN KEY(source,transaction_id,line_id) REFERENCES sales(source,transaction_id,line_id));
+CREATE TABLE allocations(posting INTEGER NOT NULL REFERENCES stock_postings, lot INTEGER NOT NULL REFERENCES lots, quantity INTEGER NOT NULL, PRIMARY KEY(posting,lot));
+CREATE INDEX sales_by_time ON sales(occurred_at);
+CREATE INDEX posting_original ON stock_postings(original);
+CREATE TABLE camera_events(id TEXT PRIMARY KEY, camera TEXT NOT NULL, label TEXT NOT NULL, occurred_at TEXT NOT NULL, zones TEXT NOT NULL, has_clip INTEGER NOT NULL);
+CREATE TABLE source_cameras(source TEXT PRIMARY KEY, camera TEXT NOT NULL);
+CREATE TABLE service_settings(id INTEGER PRIMARY KEY CHECK(id=1), minutes INTEGER NOT NULL CHECK(minutes BETWEEN 1 AND 30));
+CREATE TABLE purchase_orders(id INTEGER PRIMARY KEY, supplier INTEGER NOT NULL REFERENCES suppliers, number TEXT NOT NULL, warehouse TEXT NOT NULL REFERENCES warehouses, ordered TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('Open','Received','Canceled')), invoice INTEGER UNIQUE REFERENCES invoices, UNIQUE(supplier,number));
+CREATE TABLE purchase_order_lines(order_id INTEGER NOT NULL REFERENCES purchase_orders, sku TEXT NOT NULL REFERENCES products, quantity INTEGER NOT NULL CHECK(quantity>0), PRIMARY KEY(order_id,sku));
