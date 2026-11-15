@@ -6,6 +6,20 @@ services:
     environment:
       NAVIQRA_SECRET: ${NAVIQRA_SECRET:?Set NAVIQRA_SECRET}
       NAVIQRA_SETUP_TOKEN: ${NAVIQRA_SETUP_TOKEN:-}
+      NAVIQRA_FRIGATE_URL: ${NAVIQRA_FRIGATE_URL:-}
+      NAVIQRA_FRIGATE_TOKEN: ${NAVIQRA_FRIGATE_TOKEN:-}
+    volumes:
+      - station-data:/app/data
+  camera-monitor:
+    profiles: [cameras]
+    build: .
+    command: ["python", "-m", "monitor"]
+    restart: unless-stopped
+    environment:
+      NAVIQRA_SECRET: ${NAVIQRA_SECRET:?Set NAVIQRA_SECRET}
+      NAVIQRA_FRIGATE_URL: ${NAVIQRA_FRIGATE_URL:-}
+      NAVIQRA_FRIGATE_TOKEN: ${NAVIQRA_FRIGATE_TOKEN:-}
+      NAVIQRA_EXPECTED_CAMERAS: ${NAVIQRA_EXPECTED_CAMERAS:-}
     volumes:
       - station-data:/app/data
 volumes:

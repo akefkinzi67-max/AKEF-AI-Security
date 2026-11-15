@@ -2,7 +2,7 @@ import csv
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from io import StringIO
+from io import BytesIO, StringIO
 import json
 import os
 from pathlib import Path
@@ -10,18 +10,19 @@ import re
 import secrets
 import sqlite3
 
-from flask import Flask, Response, abort, g, redirect, render_template, request, session
+from flask import Flask, Response, abort, g, redirect, render_template, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from analytics import pos_exception_signal, register_forecast
-from cameras import fetch_events, origin, recording_url
+from cameras import fetch_clip, fetch_events, origin, recording_url
+from monitor import save_events, timestamp
 from commander import get_partner_xml, import_plu, tlog_csv
 from inventory import add_lot, create_order, movement, post_sale, receive_invoice, take_stock
 
 ROOT = Path(__file__).parent
 FIELDS = ("transaction_id", "line_id", "occurred_at", "kind", "sku", "quantity",
           "amount", "fuel_grade", "pump")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def connect(path):
@@ -300,6 +301,33 @@ def create_app(config=None):
             if not changed:
                 raise ValueError("Select an open purchase order.")
             detail = f"Purchase order {order_id} canceled"
+        elif action == "incident":
+            event_id = form.get("event", "").strip() or None
+            camera = required(form["camera"]) if not event_id else ""
+            if event_id:
+                event = db.execute("SELECT camera FROM camera_events WHERE id=?", (event_id,)).fetchone()
+                if event is None:
+                    raise ValueError("Select an existing camera event.")
+                camera = event["camera"]
+            incident = db.execute("""INSERT INTO incidents(camera,category,detail,event_id,opened)
+                VALUES (?,'Security review',?,?,?)""",
+                (camera, required(form["detail"], 1000), event_id, timestamp())).lastrowid
+            detail = f"Incident {incident} recorded"
+        elif action == "review-incident":
+            incident = int(form["incident"])
+            changed = db.execute("UPDATE incidents SET reviewed=?,reviewer=? WHERE id=? AND reviewed IS NULL",
+                                 (timestamp(), g.user["username"], incident)).rowcount
+            if not changed:
+                raise ValueError("Select an open incident.")
+            detail = f"Incident {incident} reviewed"
+        elif action == "queue":
+            camera = required(form["camera"])
+            stamp = datetime.fromisoformat(form["observed"])
+            if stamp.utcoffset() is None:
+                raise ValueError("Use a timestamp with an explicit UTC offset.")
+            db.execute("INSERT INTO queue_observations VALUES (?,?,?)",
+                       (camera, stamp.astimezone(timezone.utc).isoformat(timespec="microseconds"), int(form["waiting"])))
+            detail = f"Queue observation for {camera}"
         elif action == "post-sale":
             detail = post_sale(db, form, g.user["username"], required)
         elif action == "source-camera":
@@ -333,7 +361,17 @@ def create_app(config=None):
             return dashboard("Invalid username or password.", 401)
         try:
             events = None
+            clip = None
             partner_payload = None
+            if action == "save-clip":
+                if g.user is None or g.user["role"] == "employee":
+                    abort(403)
+                incident = int(request.form["incident"])
+                row = g.db.execute("""SELECT e.id FROM incidents i JOIN camera_events e
+                    ON e.id=i.event_id WHERE i.id=? AND e.has_clip=1""", (incident,)).fetchone()
+                if not frigate or not row:
+                    raise ValueError("The incident has no available Frigate recording.")
+                clip = fetch_clip(frigate, os.getenv("NAVIQRA_FRIGATE_TOKEN"), row["id"])
             if action == "partner":
                 if g.user is None or g.user["role"] != "owner":
                     abort(403)
@@ -348,11 +386,19 @@ def create_app(config=None):
                 events = fetch_events(frigate, os.getenv("NAVIQRA_FRIGATE_TOKEN"))
             with g.db:
                 g.db.execute("BEGIN IMMEDIATE")
-                if events is None:
+                if clip is not None:
+                    held = g.db.execute("SELECT COALESCE(SUM(length(content)),0) FROM incident_clips WHERE incident<>?",
+                                        (incident,)).fetchone()[0]
+                    if held + len(clip) > 256 * 1024 * 1024:
+                        raise ValueError("The station clip storage limit has been reached.")
+                    g.db.execute("INSERT INTO incident_clips VALUES (?,?) ON CONFLICT(incident) DO NOTHING",
+                                 (incident, clip))
+                    message = f"Clip saved for incident {incident}."
+                    audit(action, message)
+                elif events is None:
                     message = operate(action, partner_payload)
                 else:
-                    g.db.executemany("""INSERT INTO camera_events VALUES (?,?,?,?,?,?)
-                        ON CONFLICT(id) DO UPDATE SET zones=excluded.zones, has_clip=excluded.has_clip""", events)
+                    save_events(g.db, events)
                     message = f"Refreshed {len(events)} Frigate events."
                     audit(action, message)
             session["message"] = message
@@ -383,10 +429,10 @@ def create_app(config=None):
                     abort(400, "Enter a valid date range.")
                 minutes = db.execute("SELECT minutes FROM service_settings").fetchone()
                 minutes = minutes[0] if minutes else 2
-                forecast, error, validation_hours = register_forecast(db.execute("""
+                forecast, error, validation_hours, schedule = register_forecast(db.execute("""
                     SELECT MIN(occurred_at) AS occurred_at FROM sales WHERE kind='Sale'
                     GROUP BY source,transaction_id
-                """), tz, minutes)
+                """), tz, minutes, include_profile=True)
                 latest_sale = db.execute("SELECT MAX(occurred_at) FROM sales").fetchone()[0]
                 signal = None
                 if latest_sale:
@@ -409,6 +455,7 @@ def create_app(config=None):
                         WHERE kind<>'Sale' AND occurred_at>=? AND occurred_at<?
                         GROUP BY source,transaction_id,kind ORDER BY MAX(occurred_at) DESC LIMIT 30""", bounds)],
                     advice=forecast,
+                    schedule=schedule,
                     forecast_error=error,
                     validation_hours=validation_hours,
                     exception_signal=signal,
@@ -417,7 +464,12 @@ def create_app(config=None):
                         GROUP BY day ORDER BY day DESC LIMIT 7""", bounds).fetchall()[::-1],
                     history=db.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 30").fetchall(),
                     suppliers=db.execute("SELECT * FROM suppliers ORDER BY name").fetchall(),
-                    orders=db.execute("""SELECT o.*,s.name FROM purchase_orders o
+                    orders=db.execute("""SELECT o.*,s.name,
+                        (SELECT COUNT(*) FROM order_receipts r WHERE r.order_id=o.id) AS receipts,
+                        (SELECT SUM(quantity) FROM purchase_order_lines p WHERE p.order_id=o.id) AS ordered_units,
+                        (SELECT COALESCE(SUM(quantity),0) FROM order_receipts r
+                         JOIN invoice_lines l ON l.invoice=r.invoice WHERE r.order_id=o.id) AS received_units
+                        FROM purchase_orders o
                         JOIN suppliers s ON s.id=o.supplier ORDER BY o.id DESC LIMIT 50""").fetchall(),
                     invoices=db.execute("""SELECT i.*,s.name,SUM(l.quantity*l.unit_cents) AS cents
                         FROM invoices i JOIN suppliers s ON s.id=i.supplier JOIN invoice_lines l ON l.invoice=i.id
@@ -441,6 +493,13 @@ def create_app(config=None):
                         LEFT JOIN cost ON cost.posting=p.id
                         WHERE p.mode<>'skip' AND s.occurred_at>=? AND s.occurred_at<?""", bounds).fetchone(),
                     camera_events=db.execute("SELECT * FROM camera_events ORDER BY occurred_at DESC LIMIT 30").fetchall(),
+                    health=db.execute("SELECT * FROM camera_health ORDER BY camera").fetchall(),
+                    incidents=db.execute("""SELECT i.*,e.has_clip,c.incident IS NOT NULL AS saved FROM incidents i
+                        LEFT JOIN incident_clips c ON c.incident=i.id
+                        LEFT JOIN camera_events e ON e.id=i.event_id ORDER BY i.reviewed IS NOT NULL,i.id DESC LIMIT 50""").fetchall(),
+                    queue=db.execute("""SELECT * FROM queue_observations WHERE observed<=? AND observed>=?
+                        ORDER BY observed DESC LIMIT 1""", (timestamp(), (datetime.now(timezone.utc) -
+                        timedelta(minutes=5)).isoformat(timespec="microseconds"))).fetchone(),
                     frigate=frigate,
                     vendor_maps=maps.keys(),
                     partner=bool(partner),
@@ -473,5 +532,14 @@ def create_app(config=None):
             writer.writerow(values)
         return Response(output.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition": 'attachment; filename="sales.csv"'})
+
+    @app.get("/incidents/<int:incident>/clip.mp4")
+    def incident_clip(incident):
+        if g.user is None or g.user["role"] == "employee":
+            abort(403)
+        row = g.db.execute("SELECT content FROM incident_clips WHERE incident=?", (incident,)).fetchone()
+        if row is None:
+            abort(404)
+        return send_file(BytesIO(row["content"]), mimetype="video/mp4", conditional=True)
 
     return app

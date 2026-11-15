@@ -22,19 +22,43 @@ def origin(value):
     return value.rstrip("/")
 
 
-def fetch_events(base, token):
-    headers = {"Accept": "application/json"}
+CLIP_LIMIT = 16 * 1024 * 1024
+
+
+def fetch(base, token, path, media_type, limit):
+    headers = {"Accept": media_type}
     if token:
-        if urlsplit(base).scheme != "https":
+        if urlsplit(base).scheme != "https" or not re.fullmatch(r"[A-Za-z0-9_.-]+", token):
             raise ValueError("Frigate credentials require HTTPS.")
         headers["Cookie"] = "frigate_token=" + token
-    endpoint = origin(base) + "/api/events?limit=100"
     try:
+        endpoint = origin(base) + path
         with build_opener(NoRedirect()).open(Request(endpoint, headers=headers), timeout=5) as response:
-            payload = response.read(8 * 1024 * 1024 + 1)
-        if len(payload) > 8 * 1024 * 1024:
-            raise ValueError
-        events = json.loads(payload)
+            payload = response.read(limit + 1)
+        if len(payload) > limit:
+            raise ValueError("Frigate response exceeds the size limit.")
+        return payload
+    except (URLError, TimeoutError, OSError):
+        raise ValueError("Could not reach the configured Frigate server.") from None
+
+
+def fetch_stats(base, token):
+    try:
+        cameras = json.loads(fetch(base, token, "/api/stats", "application/json", 1024 * 1024))["cameras"]
+        stats = {}
+        for name, status in cameras.items():
+            fps = float(status["camera_fps"])
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", name) or not math.isfinite(fps) or fps < 0:
+                raise ValueError
+            stats[name] = fps
+        return stats
+    except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
+        raise ValueError("Could not read valid camera statistics.") from None
+
+
+def fetch_events(base, token):
+    try:
+        events = json.loads(fetch(base, token, "/api/events?limit=100", "application/json", 8 * 1024 * 1024))
         if not isinstance(events, list) or len(events) > 100:
             raise ValueError
         validated = []
@@ -65,3 +89,12 @@ def fetch_events(base, token):
 def recording_url(base, camera, occurred_at):
     stamp = int(datetime.fromisoformat(occurred_at).timestamp())
     return f"{origin(base)}/api/{quote(camera, safe='')}/start/{stamp-20}/end/{stamp+20}/clip.mp4"
+
+
+def fetch_clip(base, token, event_id):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", event_id) or event_id in (".", ".."):
+        raise ValueError("Invalid Frigate event ID.")
+    clip = fetch(base, token, f"/api/events/{event_id}/clip.mp4", "video/mp4", CLIP_LIMIT)
+    if len(clip) < 16 or clip[4:8] != b"ftyp":
+        raise ValueError("Frigate did not return an MP4 clip.")
+    return clip

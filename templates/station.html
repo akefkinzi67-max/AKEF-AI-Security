@@ -54,18 +54,37 @@
 </tbody></table></div>{% else %}<p>No fuel lines have been imported.</p>{% endif %}</section>
 </div>
 <div>
-<section id="cameras"><h2>Camera Events</h2>
+<section id="cameras"><h2>Cameras &amp; Incidents</h2>
 {% if frigate %}
 <form method="post" action="/sync-cameras">{{ csrf() }}<button>Refresh Frigate events</button></form>
+{% for camera in health %}<p>{{ camera.camera }} · {{ camera.state }}<br><small>Last check {{ camera.checked }}</small></p>
+{% else %}<p>Awaiting the first automatic health check.</p>{% endfor %}
 {% for event in camera_events %}<p>{{ event.camera }} · {{ event.label }} · {{ event.occurred_at }}{% if event.zones %}<br>{{ event.zones }}{% endif %}
 {% if event.has_clip %}<br><a href="{{ frigate }}/api/events/{{ event.id }}/clip.mp4" rel="noreferrer">Open event clip</a>{% endif %}</p>
+<details><summary>Log incident</summary><form method="post" action="/incident">{{ csrf() }}
+<input name="event" value="{{ event.id }}" type="hidden">{{ field('Incident notes','detail') }}<button>Record incident</button></form></details>
 {% else %}<p>No events have been recorded in NAVIQRA.</p>{% endfor %}
 {% else %}<p>Configure a Frigate server to retrieve events.</p>{% endif %}
+<details><summary>Record manual incident</summary><form method="post" action="/incident">{{ csrf() }}{{ field('Camera or location','camera') }}{{ field('Incident notes','detail') }}<button>Record incident</button></form></details>
+{% for incident in incidents %}
+<details><summary>#{{ incident.id }} · {{ incident.category }} · {{ incident.camera }}{% if not incident.reviewed %} · Open{% endif %}</summary>
+<p>{{ incident.opened }} · {{ incident.detail }}</p>
+{% if incident.saved %}<video controls preload="none" src="{{ url_for('incident_clip', incident=incident.id) }}"></video>
+<a href="{{ url_for('incident_clip', incident=incident.id) }}" download>Download saved clip</a>
+{% elif incident.has_clip and frigate %}<form method="post" action="/save-clip">{{ csrf() }}<input type="hidden" name="incident" value="{{ incident.id }}"><button>Save Frigate clip</button></form>{% endif %}
+{% if not incident.reviewed %}<form method="post" action="/review-incident">{{ csrf() }}<input type="hidden" name="incident" value="{{ incident.id }}"><button>Mark incident reviewed</button></form>
+{% else %}<p>Reviewed by {{ incident.reviewer }} · {{ incident.reviewed }}</p>{% endif %}
+</details>
+{% endfor %}
 </section>
 <section id="pos"><h2>Recent POS Exceptions</h2>
 {% for row in exceptions %}<p><b>{{ row.kind }}</b> · {{ row.transaction_id }}<br><small>{{ row.occurred_at }} · {{ row.source }}</small>{% if row.clip %}<br><a href="{{ row.clip }}" rel="noreferrer">Check recording near transaction time</a>{% endif %}</p>{% else %}<p>No POS exceptions have been imported.</p>{% endfor %}
 {% if frigate %}<form method="post" action="/source-camera">{{ csrf() }}{{ field('POS source identifier for this register','source') }}{{ field('Frigate camera name','camera') }}<button>Save camera mapping</button></form>{% endif %}</section>
 <section><h2>Business Guardian</h2>
+{% for camera in health if camera.state == 'Offline' %}
+<p>Check {{ camera.camera }} before relying on footage. The last health observation was {{ camera.checked }}.</p>
+{% endfor %}
+{% if incidents | selectattr('reviewed', 'none') | list %}<p>Review open security incidents and preserve applicable footage before its Frigate retention expires.</p>{% endif %}
 {% if exception_signal %}{% set day, count, total, current, baseline = exception_signal %}
 <p>Review {{ day }}: {{ count }} of {{ total }} imported transactions included POS exceptions ({{ current }}% versus {{ baseline }}% over prior observed dates). Check export coverage and review the transactions.</p>{% endif %}
 {% for row in stock if row.balance <= row.reorder %}<p>Check reorder needs for {{ row.name }} at {{ row.code }}. On hand {{ row.balance }}, reorder point {{ row.reorder }}.</p>{% endfor %}
@@ -79,6 +98,15 @@
 {% if advice %}<h3>Top Observed Peak Hours</h3>{% endif %}
 {% for weekday, hour, observations, rate, registers, overloaded in advice %}<p>{{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][weekday] }} {{ '%02d:00' | format(hour) }} · {{ rate }} per hour · {{ registers }} register(s) · {{ observations }} observed days{% if overloaded %} · Planned demand exceeds two-register capacity{% endif %}</p>
 {% else %}<p>Import sales from at least three dates for the same weekday to see estimates.</p>{% endfor %}</section>
+<section><h2>Weekly Register Schedule</h2><details><summary>View all 24 hours for seven days</summary>
+<div class="table"><table><thead><tr><th>Local hour</th>{% for day in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}<th>{{ day }}</th>{% endfor %}</tr></thead><tbody>
+{% for hour in range(24) %}<tr><th>{{ '%02d:00' | format(hour) }}</th>
+{% for day in schedule %}{% set entry = day[hour] %}<td>{% if entry %}{{ entry[4] }} reg. / {{ entry[3] }} tx{% if entry[5] %} +{% endif %}{% else %}—{% endif %}</td>{% endfor %}</tr>{% endfor %}
+</tbody></table></div></details>
+{% if queue %}<p>{{ queue.waiting }} waiting at {{ queue.camera }} · {{ queue.observed }}</p>{% endif %}
+<details><summary>Record a queue observation</summary><form method="post" action="/queue">{{ csrf() }}
+{{ field('Camera or register','camera') }}{{ field('Observed time (ISO 8601 with UTC offset)','observed') }}{{ field('People waiting','waiting','number') }}<button>Record queue observation</button></form></details>
+</section>
 </div>
 </div>
 {% endif %}
@@ -104,7 +132,7 @@
 </div>
 <h3>Purchase Orders</h3>
 {% for order in orders %}
-<p>#{{ order.id }} · {{ order.number }} · {{ order.name }} · {{ order.ordered }} · {{ order.warehouse }} · {{ order.status }}</p>
+<p>#{{ order.id }} · {{ order.number }} · {{ order.name }} · {{ order.ordered }} · {{ order.warehouse }} · {{ order.status }} · {{ order.received_units }}/{{ order.ordered_units }} units across {{ order.receipts }} invoices</p>
 {% if order.status == 'Open' %}<form action="/cancel-purchase" method="post">{{ csrf() }}<input type="hidden" name="order" value="{{ order.id }}"><button>Cancel purchase order {{ order.number }}</button></form>{% endif %}
 {% else %}<p>No purchase orders have been created.</p>{% endfor %}
 <h3>Received Invoices</h3>

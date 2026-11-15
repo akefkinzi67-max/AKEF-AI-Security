@@ -13,6 +13,7 @@ from backup import copy_database
 from analytics import pos_exception_signal, register_forecast
 from station import FIELDS, ROOT, connect, create_app, migrate
 from commander import tlog_csv, import_plu, get_partner_xml
+from monitor import poll
 
 
 class StationTest(unittest.TestCase):
@@ -127,8 +128,10 @@ class StationTest(unittest.TestCase):
         self.assertEqual(self.post("purchase", **order).status_code, 302)
         invoice = dict(supplier=1, number="1", purchased="2026-01-01", warehouse="A",
                        items="W,10,1.25,2026-02-01", order=1)
-        self.assertEqual(self.post("invoice", **dict(invoice, items="W,9,1.25,")).status_code, 400)
-        self.assertEqual(self.post("invoice", **invoice).status_code, 302)
+        self.assertEqual(self.post("invoice", **dict(invoice, items="W,11,1.25,")).status_code, 400)
+        self.assertEqual(self.post("invoice", **dict(invoice, items="W,4,1.25,2026-02-01")).status_code, 302)
+        self.assertIn(b"4/10 units", self.client.get("/").data)
+        self.assertEqual(self.post("invoice", **dict(invoice, number="1B", items="W,6,1.25,2026-02-01")).status_code, 302)
         self.assertEqual(self.post("cancel-purchase", order=1).status_code, 400)
         self.assertEqual(self.post("invoice", **dict(invoice, order="")).status_code, 409)
         broken = dict(invoice, order="", number="2", items="W,10,1.25,\nUNKNOWN,1,2.00,")
@@ -148,7 +151,7 @@ class StationTest(unittest.TestCase):
         self.assertIn(b"$7.00", self.client.get("/?start=2026-01-01&end=2026-01-01").data)
         self.assertEqual(len(self.client.get("/sales.csv?start=2026-01-01&end=2026-01-01").data.splitlines()), 2)
         with closing(connect(self.path)) as db:
-            self.assertEqual(db.execute("SELECT remaining FROM lots").fetchone()[0], 7)
+            self.assertEqual(db.execute("SELECT SUM(remaining) FROM lots").fetchone()[0], 7)
             self.assertEqual(db.execute("SELECT SUM(delta) FROM movements").fetchone()[0], 7)
 
     def test_existing_database_upgrade_preserves_stock(self):
@@ -210,6 +213,32 @@ class StationTest(unittest.TestCase):
         dashboard = self.client.get("/").data
         self.assertEqual(dashboard.count(b"1731400000.3-abc/clip.mp4"), 1)
         self.assertIn(b"/api/cashier/start/", dashboard)
+
+    def test_camera_outage_incident_and_protected_clip(self):
+        with closing(connect(self.path)) as db:
+            with patch("monitor.fetch_stats", return_value={"cashier": 0}), patch("monitor.fetch_events", return_value=[]):
+                for _ in range(4):
+                    poll(db, "http://fixture.invalid", None, {"cashier"})
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM incidents WHERE category='Camera offline'").fetchone()[0], 1)
+            with patch("monitor.fetch_stats", return_value={"cashier": 5}), patch("monitor.fetch_events", return_value=[]):
+                poll(db, "http://fixture.invalid", None, {"cashier"})
+            self.assertEqual(db.execute("SELECT state FROM camera_health WHERE camera='cashier'").fetchone()[0], "Online")
+            db.execute("INSERT INTO camera_events VALUES ('test-e','cashier','person','2026-01-01T02:00:00Z','counter',1)")
+            db.commit()
+        with patch.dict(os.environ, NAVIQRA_FRIGATE_URL="http://127.0.0.1:28880"):
+            app = create_app({"TESTING": True, "DATABASE": self.path, "SECRET_KEY": "a" * 40})
+        self.client = app.test_client()
+        self.post("login", username="owner", password="synthetic-password")
+        self.assertEqual(self.post("incident", event="test-e", detail="Synthetic incident").status_code, 302)
+        clip = b"\x00\x00\x00\x10ftypisom0000"
+        with patch("station.fetch_clip", return_value=clip):
+            self.assertEqual(self.post("save-clip", incident=2).status_code, 302)
+        self.assertEqual(app.test_client().get("/incidents/2/clip.mp4").status_code, 403)
+        response = self.client.get("/incidents/2/clip.mp4", headers={"Range": "bytes=0-7"})
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.data, clip[:8])
+        response.close()
+        self.assertEqual(self.post("review-incident", incident=2).status_code, 302)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ Alternatively put the same settings in an untracked .env file and run `docker co
 
 Create suppliers and receive invoices with existing SKUs, whole-unit quantities, unit costs in USD, and optional expiration dates. Each supplier invoice number can be received once. Downward adjustments and sales draw from soonest-expiring lots first, then older undated lots. Transfers preserve lot cost and expiration. Opening stock and manual receipts have unknown cost unless received through an invoice.
 
-Create a purchase order with the supplier, destination and SKU quantities. An invoice can close an open order when the supplier, destination and total quantities per SKU match. Standalone invoices are supported. Open orders can be canceled. Partial fulfillment remains pending.
+Create a purchase order with the supplier, destination and SKU quantities. Link one or more invoices to an open order. Each receipt updates inventory immediately, and the order closes when quantities are fully received. An over-receipt rolls back the invoice and all stock changes. Canceling an open order cancels its remainder and preserves receipts already posted.
 
 Review normalized POS lines before posting them to inventory. For a sale, select the warehouse from which the goods physically left. A restocked refund restores the original cost layers, a refund-only posting changes revenue, and a void can reverse an unreversed sale with no prior refunds. Use Skip for already-accounted opening history and events with no inventory effect. The same imported line can be reviewed once. Posted merchandise gross profit includes only reviewed sales and adjustments; it displays as unavailable if any participating cost is unknown. Date filters use the station time zone and inclusive calendar dates.
 
@@ -44,4 +44,4 @@ Run `python -m unittest -v` for synthetic integration verification. The advisor 
 
 Business Guardian shows low stock, upcoming or expired lots, pending stock postings and unusually high rates of imported POS exceptions. The rate rule compares the latest observed day with at least seven earlier observed days within 28 days. It requires at least 20 latest-day transactions, five latest-day exceptions, and 100 baseline transactions, then flags rates both at least double the baseline and at least five percentage points above it. Check coverage before drawing conclusions.
 
-Pending: authorized field maps and vendor acceptance, ATG, camera device and retention acceptance, purchase-order approval workflow, queue measurement, advanced anomaly modeling, secure remote deployment and full station acceptance. Do not use this review build for production station operations.
+Pending: authorized field maps and vendor acceptance, ATG, live camera device and recording acceptance, automated queue measurement, advanced anomaly modeling, secure remote deployment and full station acceptance. Do not use this review build for production station operations.

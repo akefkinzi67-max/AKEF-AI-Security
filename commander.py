@@ -16,11 +16,13 @@ def tlog_csv(payload, mapping, fields):
     if len(payload) > LIMIT:
         raise ValueError("The XML export exceeds 5 MiB.")
     text = payload.decode("utf-8-sig")
-    if re.search(r"<!\s*(DOCTYPE|ENTITY)", text, re.IGNORECASE):
+    if "\x00" in text or re.search(r"<!\s*(DOCTYPE|ENTITY)", text, re.IGNORECASE):
         raise ValueError("DTD and entity declarations are unsupported.")
     try:
         document = ElementTree.fromstring(text)
         namespaces = mapping.get("namespaces", {})
+        if set(mapping["fields"]) - set(fields):
+            raise ValueError("The T-Log map contains unknown output columns.")
         output = StringIO()
         writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
@@ -81,7 +83,7 @@ def get_partner_xml(endpoint, authorization):
     """Transport for a partner-confirmed HTTPS GET XML export contract."""
     parts = urlsplit(endpoint)
     if (parts.scheme != "https" or not parts.hostname or parts.username or parts.password
-        or parts.fragment or not authorization or "\n" in authorization or "\r" in authorization):
+        or parts.fragment or not authorization or any(not 32 <= ord(char) < 127 for char in authorization)):
         raise ValueError("Configure an authorized HTTPS XML export endpoint.")
     request = Request(endpoint, headers={"Accept": "application/xml", "Authorization": authorization})
     try:

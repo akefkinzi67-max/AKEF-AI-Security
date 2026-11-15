@@ -77,9 +77,14 @@ def receive_invoice(db, form, actor, required):
         movement(db, sku, warehouse, quantity, "Invoice receipt", actor)
     if order_id:
         expected = dict(db.execute("SELECT sku,quantity FROM purchase_order_lines WHERE order_id=?", (order_id,)))
-        if received != expected:
-            raise ValueError("Invoice quantities must match the full purchase order.")
-        db.execute("UPDATE purchase_orders SET status='Received',invoice=? WHERE id=?", (invoice, order_id))
+        prior = Counter(dict(db.execute("""SELECT l.sku,SUM(l.quantity) FROM order_receipts r
+            JOIN invoice_lines l ON l.invoice=r.invoice WHERE r.order_id=? GROUP BY l.sku""", (order_id,))))
+        total = prior + received
+        if any(count > expected.get(sku, 0) for sku, count in total.items()):
+            raise ValueError("Invoice quantities exceed the remaining purchase order.")
+        db.execute("INSERT INTO order_receipts VALUES (?,?)", (order_id, invoice))
+        if total == expected:
+            db.execute("UPDATE purchase_orders SET status='Received',invoice=? WHERE id=?", (invoice, order_id))
     return f"Invoice {number}: {len(rows)} lines received"
 
 

@@ -13,3 +13,4 @@ textarea{font:inherit;background:#071b32;border:1px solid #3770a5;border-radius:
 details{padding:.6rem 0;border-bottom:1px solid #173857;overflow-wrap:anywhere}
 details form{padding:.75rem 0}
 nav{max-height:calc(100vh - 6rem);overflow:auto}
+video{width:100%;max-height:24rem;background:#030810}

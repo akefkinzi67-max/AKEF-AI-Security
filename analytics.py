@@ -4,7 +4,7 @@ from datetime import datetime
 import math
 
 
-def register_forecast(rows, tz, service_minutes):
+def register_forecast(rows, tz, service_minutes, *, include_profile=False):
     days = defaultdict(dict)
     for row in rows:
         stamp = datetime.fromisoformat(row["occurred_at"]).astimezone(tz)
@@ -34,6 +34,10 @@ def register_forecast(rows, tz, service_minutes):
         key=lambda profile: (-profile[3], profile[0], profile[1]),
     )[:10]
     mae = round(total_error / predictions, 2) if predictions else None
+    if include_profile:
+        indexed = {(row[0], row[1]): row for row in profiles}
+        schedule = [[indexed.get((weekday, hour)) for hour in range(24)] for weekday in range(7)]
+        return peak_hours, mae, predictions, schedule
     return peak_hours, mae, predictions
 
 
