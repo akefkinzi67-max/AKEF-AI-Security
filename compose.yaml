@@ -1,0 +1,12 @@
+services:
+  station:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      NAVIQRA_SECRET: ${NAVIQRA_SECRET:?Set NAVIQRA_SECRET}
+      NAVIQRA_SETUP_TOKEN: ${NAVIQRA_SETUP_TOKEN:-}
+    volumes:
+      - station-data:/app/data
+volumes:
+  station-data:

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en-US">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAVIQRA Gas Station AI Management</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='station.css') }}">
+</head>
+<body>
+<header><div><strong>NAVIQRA</strong><br>Gas Station AI Management</div>
+{% if station %}<span>{{ station.name }}</span>{% endif %}
+{% if g.user %}<form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Sign out</button></form>{% endif %}
+</header>
+{% macro csrf() %}<input type="hidden" name="csrf" value="{{ session.csrf }}">{% endmacro %}
+{% macro field(label, name, type='text') %}<label>{{ label }}<input name="{{ name }}" type="{{ type }}" required></label>{% endmacro %}
+{% macro dollars(cents) %}{{ "$%.2f" | format(cents / 100) }}{% endmacro %}
+{% if g.user %}
+<nav aria-label="Station navigation"><a href="#overview">Dashboard</a><a href="#inventory">Inventory &amp; Stock</a>
+{% if totals %}<a href="#fuel">Fuel Management</a><a href="#pos">POS Review</a><a href="#advisor">Register Advisor</a><a href="#audit">Audit Log</a>{% endif %}
+</nav>
+{% endif %}
+<main id="overview">
+{% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
+{% if not station %}
+<section class="auth"><h1>Set up your station</h1><form method="post" action="/setup">{{ csrf() }}
+{{ field('Setup token','token','password') }}{{ field('Station name','name') }}
+<label>Station time zone<select name="timezone">{% for tz in ['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','America/Anchorage','Pacific/Honolulu'] %}<option>{{ tz }}</option>{% endfor %}</select></label>
+{{ field('Initial warehouse code','warehouse') }}{{ field('Owner username','username') }}{{ field('Owner password','password','password') }}<button>Initialize station</button></form></section>
+{% elif not g.user %}
+<section class="auth"><h1>Sign in</h1><form method="post" action="/login">{{ csrf() }}{{ field('Username','username') }}{{ field('Password','password','password') }}<button>Sign in</button></form></section>
+{% else %}
+<h1>Station Dashboard</h1>
+{% if totals %}
+<div class="metrics"><section><h2>Net Imported Sales</h2><strong>{{ dollars(totals.cents) if totals.lines else 'No sales data' }}</strong></section>
+<section><h2>Imported Sale and Refund Lines</h2><strong>{{ totals.lines }}</strong></section>
+<section><h2>Fuel Lines by Grade and Pump</h2><strong>{{ fuel | length }}</strong></section></div>
+<div class="dashboard">
+<div>
+<section><h2>Sales Trend</h2><p>Most recent imported dates (UTC) · <a href="/sales.csv">Export sales CSV</a></p>
+{% if trend %}{% set peak = trend | map(attribute='cents') | map('abs') | max %}
+{% for row in trend %}<div class="bar"><span>{{ row.day }}</span><meter min="0" max="{{ peak or 1 }}" value="{{ row.cents | abs }}">{{ row.cents }}</meter><span>{{ dollars(row.cents) }}</span></div>{% endfor %}
+{% else %}<p>No sales data available.</p>{% endif %}</section>
+<section id="fuel"><h2>Fuel Sales</h2>
+{% if fuel %}<div class="table"><table><thead><tr><th>Grade</th><th>Pump</th><th>Net Gallons</th><th>Net Sales</th></tr></thead><tbody>
+{% for row in fuel %}<tr><td>{{ row.fuel_grade }}</td><td>{{ row.pump or 'Unavailable' }}</td><td>{{ '%.3f' | format(row.gallons) }}</td><td>{{ dollars(row.cents) }}</td></tr>{% endfor %}
+</tbody></table></div>{% else %}<p>No fuel lines have been imported.</p>{% endif %}</section>
+</div>
+<div>
+<section><h2>Camera Status</h2><p>Camera integration pending setup and validation.</p></section>
+<section id="pos"><h2>Recent POS Exceptions</h2>
+{% for row in exceptions %}<p><b>{{ row.kind }}</b> · {{ row.transaction_id }}<br><small>{{ row.occurred_at }} · {{ row.source }}</small></p>{% else %}<p>No POS exceptions have been imported.</p>{% endfor %}</section>
+<section id="advisor"><h2>Register Advisor</h2><p>Estimates use observed transaction days and a two-minute service time.</p>
+{% for weekday, hour, observations, rate, registers in advice %}<p>{{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][weekday] }} {{ '%02d:00' | format(hour) }} · {{ rate }} per hour · {{ registers }} register(s) · {{ observations }} observed days</p>
+{% else %}<p>Import sales from at least three dates for the same weekday to see estimates.</p>{% endfor %}</section>
+</div>
+</div>
+{% endif %}
+<section id="inventory"><h2>Inventory &amp; Stock</h2>
+{% if stock %}<div class="table"><table><thead><tr><th>SKU</th><th>Product</th><th>Warehouse</th><th>On Hand</th><th>Status</th></tr></thead><tbody>
+{% for row in stock %}<tr><td>{{ row.sku }}</td><td>{{ row.name }}</td><td>{{ row.code }}</td><td>{{ row.balance }}</td><td>{% if row.balance <= row.reorder %}<strong class="gold">Reorder</strong>{% else %}In stock{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>{% else %}<p>No products have been created.</p>{% endif %}</section>
+{% if totals %}
+<div class="forms">
+<section><h2>Import Sales CSV</h2><form action="/import" method="post" enctype="multipart/form-data">{{ csrf() }}{{ field('Source identifier','source') }}
+<label>Normalized CSV<input name="export" type="file" accept=".csv" required></label><button>Import transactions</button></form></section>
+<section><h2>Add Product</h2><form method="post" action="/product">{{ csrf() }}{{ field('SKU','sku') }}{{ field('Product name','name') }}
+<label>Barcode<input name="barcode"></label>{{ field('Reorder quantity','reorder','number') }}<button>Add product</button></form></section>
+<section><h2>Stock Movement</h2><form method="post" action="/movement">{{ csrf() }}{{ field('SKU','sku') }}{{ field('Warehouse','warehouse') }}
+<label>Type<select name="reason">{% for option in ['Receive','Damage','Customer return','Vendor return','Count','Transfer'] %}<option>{{ option }}</option>{% endfor %}</select></label>
+{{ field('Quantity (absolute on-hand for Count)','quantity','number') }}<label>Destination (Transfer only)<input name="target"></label><button>Record movement</button></form></section>
+<section><h2>Add Warehouse</h2><form action="/warehouse" method="post">{{ csrf() }}{{ field('Warehouse code','warehouse') }}<button>Add warehouse</button></form></section>
+{% if g.user.role == 'owner' %}
+<section><h2>Add User</h2><form action="/user" method="post">{{ csrf() }}{{ field('Username','username') }}{{ field('Password','password','password') }}
+<label>Role<select name="role"><option value="manager">Manager</option><option value="employee">Employee</option></select></label><button>Create account</button></form></section>
+{% endif %}
+</div>
+<section id="audit"><h2>Recent Audit Entries</h2>
+{% for row in history %}<p>{{ row.at }} UTC · {{ row.actor }} · {{ row.action }} · {{ row.detail }}</p>{% endfor %}</section>
+{% endif %}
+{% endif %}
+</main>
+</body>
+</html>
