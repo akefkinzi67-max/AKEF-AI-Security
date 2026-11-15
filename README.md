@@ -6,7 +6,7 @@ Local review build. The station starts empty and operates independently of the P
 
 Install Python 3.12 and create a virtual environment with `python -m venv .venv`. Activate it using the command appropriate for your shell. Install with `python -m pip install -r requirements.txt`.
 
-Generate two separate values with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Set `NAVIQRA_SECRET` and `NAVIQRA_SETUP_TOKEN` in the process environment. Keep the secret stable across restarts. Start with `waitress-serve --listen=127.0.0.1:8080 --call station:create_app`. Open http://127.0.0.1:8080, initialize the station and warehouse, and sign in. Remove the setup token from the process environment for subsequent launches. Owners can add managers and employees. Managers handle stock and imports. Employees can view stock.
+Generate two separate values with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Set `NAVIQRA_SECRET` and `NAVIQRA_SETUP_TOKEN` in the process environment. Keep the secret stable across restarts. Start with `waitress-serve --listen=127.0.0.1:8080 --call station:create_app`. Open http://127.0.0.1:8080, initialize the station and warehouse, and sign in. Remove the setup token from the process environment for subsequent launches. Owners can add, disable and change the role of managers and employees. Account updates invalidate existing sessions. Managers handle stock and imports. Employees can view stock.
 
 On Windows, `./install-station.ps1` creates the virtual environment and installs dependencies. With the environment values set, `./install-station.ps1 -Start` also starts the service.
 
@@ -40,6 +40,8 @@ Before updating, verify the backup and test the new version with a restored copy
 
 ## Scope and verification
 
-Run `python -m unittest -v` for synthetic integration verification. The advisor uses observed transaction days and a configurable service time (two minutes by default) and displays estimates only after three observed dates for a weekday. Partial imports can bias estimates. Treat the result as a planning input.
+Run `python -m unittest -v` for synthetic integration verification. The advisor ranks the ten busiest weekday/hour combinations, assumes 80% register utilization, and flags demand above two-register capacity. It uses a configurable service time (two minutes by default) and requires at least three observed dates for a weekday. The historical mean absolute error compares earlier same-weekday averages to each later observed day, starting at the fourth day. Partial imports can bias estimates.
+
+Business Guardian shows low stock, upcoming or expired lots, pending stock postings and unusually high rates of imported POS exceptions. The rate rule compares the latest observed day with at least seven earlier observed days within 28 days. It requires at least 20 latest-day transactions, five latest-day exceptions, and 100 baseline transactions, then flags rates both at least double the baseline and at least five percentage points above it. Check coverage before drawing conclusions.
 
 Pending: authorized field maps and vendor acceptance, ATG, camera device and retention acceptance, purchase-order approval workflow, queue measurement, advanced anomaly modeling, secure remote deployment and full station acceptance. Do not use this review build for production station operations.

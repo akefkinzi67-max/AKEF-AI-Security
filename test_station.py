@@ -1,5 +1,6 @@
 import io
 import json
+from datetime import datetime, timedelta, timezone
 from email.message import Message
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ from contextlib import closing
 from unittest.mock import patch
 
 from backup import copy_database
+from analytics import pos_exception_signal, register_forecast
 from station import FIELDS, ROOT, connect, create_app, migrate
 from commander import tlog_csv, import_plu, get_partner_xml
 
@@ -79,6 +81,21 @@ class StationTest(unittest.TestCase):
         self.assertEqual(self.client.get("/sales.csv").status_code, 403)
         self.assertEqual(self.post("warehouse", warehouse="Z").status_code, 403)
 
+    def test_owner_disables_user_and_invalidates_existing_session(self):
+        self.assertEqual(self.post("user", username="reviewer", password="synthetic-password",
+                                   role="manager").status_code, 302)
+        owner = self.client
+        reviewer = owner.application.test_client()
+        self.client = reviewer
+        self.assertEqual(self.post("login", username="reviewer", password="synthetic-password").status_code, 302)
+        self.assertEqual(self.post("update-user", username="reviewer", role="manager", active="0").status_code, 403)
+        self.assertEqual(reviewer.get("/sales.csv").status_code, 200)
+        self.client = owner
+        self.assertEqual(self.post("update-user", username="reviewer", role="employee", active="0").status_code, 302)
+        self.assertEqual(reviewer.get("/sales.csv").status_code, 403)
+        self.assertEqual(self.post("update-user", username="reviewer", role="manager", active="1").status_code, 302)
+        self.assertEqual(reviewer.get("/sales.csv").status_code, 403)
+
     def test_register_advice_uses_distinct_transactions(self):
         rows = "".join(
             f"{day},{line},2026-01-{day}T09:00:00-08:00,Sale,A,1,1.00,,\n"
@@ -88,6 +105,19 @@ class StationTest(unittest.TestCase):
         self.assertIn(b"1.0 per hour", self.client.get("/").data)
         self.assertEqual(self.post("service-time", minutes="12").status_code, 302)
         self.assertIn(b"12 minute(s)", self.client.get("/").data)
+
+    def test_peak_capacity_backtest_and_exception_signal(self):
+        start = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
+        sales = [{"occurred_at": (start + timedelta(weeks=week)).isoformat()}
+                 for week, count in enumerate((10, 10, 10, 34)) for _ in range(count)]
+        peaks, error, hours = register_forecast(sales, timezone.utc, 10)
+        self.assertEqual(peaks, [(3, 10, 4, 16.0, 2, True)])
+        self.assertEqual((error, hours), (1.0, 24))
+        exceptions = [{"occurred_at": (start + timedelta(days=day)).isoformat(),
+                       "exception": int(day == 7 and transaction < 5)}
+                      for day in range(8) for transaction in range(20)]
+        self.assertEqual(pos_exception_signal(exceptions, timezone.utc)[1:], (5, 20, 25.0, 0.0))
+        self.assertIsNone(pos_exception_signal(exceptions[:-20], timezone.utc))
 
     def test_invoice_sale_refund_cost_and_retry(self):
         self.assertEqual(self.post("product", sku="W", name="Water", barcode="",

@@ -1,11 +1,9 @@
 import csv
-from collections import Counter, defaultdict
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from io import StringIO
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -15,6 +13,7 @@ import sqlite3
 from flask import Flask, Response, abort, g, redirect, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from analytics import pos_exception_signal, register_forecast
 from cameras import fetch_events, origin, recording_url
 from commander import get_partner_xml, import_plu, tlog_csv
 from inventory import add_lot, create_order, movement, post_sale, receive_invoice, take_stock
@@ -22,7 +21,7 @@ from inventory import add_lot, create_order, movement, post_sale, receive_invoic
 ROOT = Path(__file__).parent
 FIELDS = ("transaction_id", "line_id", "occurred_at", "kind", "sku", "quantity",
           "amount", "fuel_grade", "pump")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def connect(path):
@@ -106,27 +105,6 @@ def import_sales(db, source, content):
     return added, duplicates
 
 
-def advise(rows, tz, service_minutes):
-    visits = Counter()
-    seen = set()
-    days = defaultdict(set)
-    for row in rows:
-        day = datetime.fromisoformat(row["occurred_at"]).astimezone(tz)
-        days[day.weekday()].add(day.date())
-        key = (row["source"], row["transaction_id"])
-        if key not in seen:
-            visits[(day.weekday(), day.hour)] += 1
-            seen.add(key)
-    advice = []
-    for (weekday, hour), count in sorted(visits.items()):
-        observations = len(days[weekday])
-        if observations >= 3:
-            rate = count / observations
-            registers = min(2, max(1, math.ceil(rate * service_minutes / 48)))
-            advice.append((weekday, hour, observations, round(rate, 1), registers))
-    return advice
-
-
 def report_window(args, tz):
     start, end = args.get("start", ""), args.get("end", "")
     first = date.fromisoformat(start) if start else None
@@ -168,8 +146,8 @@ def create_app(config=None):
     @app.before_request
     def prepare():
         g.db = connect(app.config["DATABASE"])
-        g.user = g.db.execute("SELECT * FROM users WHERE username=?",
-                              (session.get("username"),)).fetchone()
+        g.user = g.db.execute("SELECT * FROM users WHERE username=? AND active=1 AND session_version=?",
+                              (session.get("username"), session.get("version", 0))).fetchone()
         if request.method == "POST":
             csrf = session.get("csrf", "")
             if not csrf or not secrets.compare_digest(csrf, request.form.get("csrf", "")):
@@ -180,6 +158,7 @@ def create_app(config=None):
     def headers(response):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'; form-action 'self'"
         return response
 
@@ -201,7 +180,7 @@ def create_app(config=None):
         password = request.form["password"]
         if not 12 <= len(password) <= 128:
             raise ValueError("Use a password between 12 and 128 characters.")
-        g.db.execute("INSERT INTO users VALUES (?,?,?)",
+        g.db.execute("INSERT INTO users(username,password,role) VALUES (?,?,?)",
                      (username, generate_password_hash(password), role))
         return username
 
@@ -236,6 +215,18 @@ def create_app(config=None):
             if role not in ("manager", "employee"):
                 abort(400)
             detail = create_account(role)
+        elif action == "update-user":
+            if g.user["role"] != "owner":
+                abort(403)
+            username = required(form["username"], 64)
+            role, active = form["role"], form["active"]
+            if role not in ("manager", "employee") or active not in ("0", "1"):
+                raise ValueError("Select a valid account status and role.")
+            changed = db.execute("""UPDATE users SET role=?,active=?,session_version=session_version+1
+                WHERE username=? AND role<>'owner'""", (role, int(active), username)).rowcount
+            if not changed:
+                raise ValueError("Select a manager or employee account.")
+            detail = f"{username} / {role} / {'active' if active == '1' else 'disabled'}"
         elif action == "warehouse":
             detail = required(form["warehouse"])
             db.execute("INSERT INTO warehouses VALUES (?)", (detail,))
@@ -331,12 +322,13 @@ def create_app(config=None):
     @app.post("/<action>")
     def mutate(action):
         if action == "login":
-            account = g.db.execute("SELECT * FROM users WHERE username=?",
+            account = g.db.execute("SELECT * FROM users WHERE username=? AND active=1",
                                    (request.form["username"],)).fetchone()
             password = request.form["password"]
             if account and len(password) <= 128 and check_password_hash(account["password"], password):
                 session.clear()
                 session["username"] = account["username"]
+                session["version"] = account["session_version"]
                 return redirect("/")
             return dashboard("Invalid username or password.", 401)
         try:
@@ -391,6 +383,18 @@ def create_app(config=None):
                     abort(400, "Enter a valid date range.")
                 minutes = db.execute("SELECT minutes FROM service_settings").fetchone()
                 minutes = minutes[0] if minutes else 2
+                forecast, error, validation_hours = register_forecast(db.execute("""
+                    SELECT MIN(occurred_at) AS occurred_at FROM sales WHERE kind='Sale'
+                    GROUP BY source,transaction_id
+                """), tz, minutes)
+                latest_sale = db.execute("SELECT MAX(occurred_at) FROM sales").fetchone()[0]
+                signal = None
+                if latest_sale:
+                    since = datetime.fromisoformat(latest_sale) - timedelta(days=30)
+                    signal = pos_exception_signal(db.execute("""
+                        SELECT MIN(occurred_at) AS occurred_at, MAX(kind<>'Sale') AS exception
+                        FROM sales WHERE occurred_at>=? GROUP BY source,transaction_id
+                    """, (since.isoformat(timespec="microseconds"),)), tz)
                 context.update(
                     fuel=db.execute("""SELECT fuel_grade,pump,SUM(cents) AS cents,
                         SUM(CAST(quantity AS REAL)) AS gallons FROM sales
@@ -404,10 +408,10 @@ def create_app(config=None):
                         FROM sales LEFT JOIN source_cameras USING(source)
                         WHERE kind<>'Sale' AND occurred_at>=? AND occurred_at<?
                         GROUP BY source,transaction_id,kind ORDER BY MAX(occurred_at) DESC LIMIT 30""", bounds)],
-                    advice=advise(db.execute("""SELECT source,transaction_id,
-                        MIN(occurred_at) AS occurred_at FROM sales WHERE kind='Sale'
-                        GROUP BY source,transaction_id ORDER BY occurred_at"""),
-                        tz, minutes),
+                    advice=forecast,
+                    forecast_error=error,
+                    validation_hours=validation_hours,
+                    exception_signal=signal,
                     trend=db.execute("""SELECT substr(occurred_at,1,10) AS day,
                         SUM(cents) AS cents FROM sales WHERE kind IN ('Sale','Refund') AND occurred_at>=? AND occurred_at<?
                         GROUP BY day ORDER BY day DESC LIMIT 7""", bounds).fetchall()[::-1],
@@ -442,6 +446,9 @@ def create_app(config=None):
                     partner=bool(partner),
                     minutes=minutes,
                 )
+                if g.user["role"] == "owner":
+                    context["accounts"] = db.execute("""SELECT username,role,active FROM users
+                        WHERE role<>'owner' ORDER BY username""").fetchall()
         return render_template("station.html", **context), status
 
     @app.get("/sales.csv")

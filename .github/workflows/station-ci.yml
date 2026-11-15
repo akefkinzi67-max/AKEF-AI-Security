@@ -19,14 +19,24 @@ jobs:
       - run: python -m unittest -v
       - name: Check local Compose deployment and restore
         run: |
+          wait_for_station() {
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent --max-time 2 http://127.0.0.1:8080/ | grep -q 'Set up your station'; then
+                return 0
+              fi
+              sleep 1
+            done
+            docker compose logs station
+            return 1
+          }
           docker compose config --quiet
           docker compose up --build -d
-          curl --fail --silent --show-error --retry 15 --retry-delay 1 --retry-connrefused http://127.0.0.1:8080/ | grep 'Set up your station'
+          wait_for_station
           curl --fail --silent --show-error -o /dev/null http://127.0.0.1:8080/static/station.css
           docker compose exec -T station python backup.py /app/data/station.sqlite3 /app/data/ci-backup.sqlite3
           docker compose exec -T station python backup.py /app/data/ci-backup.sqlite3 /app/data/ci-restored.sqlite3
           docker compose restart station
-          curl --fail --silent --show-error --retry 15 --retry-delay 1 --retry-connrefused http://127.0.0.1:8080/ | grep 'Set up your station'
+          wait_for_station
       - name: Clean up the isolated test deployment
         if: always()
         run: docker compose down -v

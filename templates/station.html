@@ -66,6 +66,8 @@
 {% for row in exceptions %}<p><b>{{ row.kind }}</b> · {{ row.transaction_id }}<br><small>{{ row.occurred_at }} · {{ row.source }}</small>{% if row.clip %}<br><a href="{{ row.clip }}" rel="noreferrer">Check recording near transaction time</a>{% endif %}</p>{% else %}<p>No POS exceptions have been imported.</p>{% endfor %}
 {% if frigate %}<form method="post" action="/source-camera">{{ csrf() }}{{ field('POS source identifier for this register','source') }}{{ field('Frigate camera name','camera') }}<button>Save camera mapping</button></form>{% endif %}</section>
 <section><h2>Business Guardian</h2>
+{% if exception_signal %}{% set day, count, total, current, baseline = exception_signal %}
+<p>Review {{ day }}: {{ count }} of {{ total }} imported transactions included POS exceptions ({{ current }}% versus {{ baseline }}% over prior observed dates). Check export coverage and review the transactions.</p>{% endif %}
 {% for row in stock if row.balance <= row.reorder %}<p>Check reorder needs for {{ row.name }} at {{ row.code }}. On hand {{ row.balance }}, reorder point {{ row.reorder }}.</p>{% endfor %}
 {% if expiring %}<p>Review {{ expiring | length }} displayed lots due within 30 days or already expired.</p>{% endif %}
 {% if pending %}<p>Review unapplied POS lines before using posted merchandise margin.</p>{% endif %}
@@ -73,7 +75,9 @@
 </section>
 <section id="advisor"><h2>Register Advisor</h2><p>Estimates use observed transaction days and {{ minutes }} minute(s) of service per visit. Each register is planned at 80% utilization.</p>
 <form method="post" action="/service-time">{{ csrf() }}{{ field('Minutes of service per visit','minutes','number') }}<button>Save service time</button></form>
-{% for weekday, hour, observations, rate, registers in advice %}<p>{{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][weekday] }} {{ '%02d:00' | format(hour) }} · {{ rate }} per hour · {{ registers }} register(s) · {{ observations }} observed days</p>
+{% if forecast_error is not none %}<p>Historical mean absolute error: {{ forecast_error }} transactions per hour across {{ validation_hours }} evaluated hours.</p>{% endif %}
+{% if advice %}<h3>Top Observed Peak Hours</h3>{% endif %}
+{% for weekday, hour, observations, rate, registers, overloaded in advice %}<p>{{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][weekday] }} {{ '%02d:00' | format(hour) }} · {{ rate }} per hour · {{ registers }} register(s) · {{ observations }} observed days{% if overloaded %} · Planned demand exceeds two-register capacity{% endif %}</p>
 {% else %}<p>Import sales from at least three dates for the same weekday to see estimates.</p>{% endfor %}</section>
 </div>
 </div>
@@ -151,6 +155,14 @@
 {% if g.user.role == 'owner' %}
 <section><h2>Add User</h2><form action="/user" method="post">{{ csrf() }}{{ field('Username','username') }}{{ field('Password','password','password') }}
 <label>Role<select name="role"><option value="manager">Manager</option><option value="employee">Employee</option></select></label><button>Create account</button></form></section>
+{% if accounts %}<section><h2>Manage Accounts</h2>
+{% for account in accounts %}
+<form action="/update-user" method="post">{{ csrf() }}
+<input type="hidden" name="username" value="{{ account.username }}"><strong>{{ account.username }}</strong>
+<label>Role<select name="role">{% for role in ['manager','employee'] %}<option value="{{ role }}" {% if role == account.role %}selected{% endif %}>{{ role | capitalize }}</option>{% endfor %}</select></label>
+<label>Status<select name="active"><option value="1" {% if account.active %}selected{% endif %}>Active</option><option value="0" {% if not account.active %}selected{% endif %}>Disabled</option></select></label>
+<button>Update account</button></form>
+{% endfor %}</section>{% endif %}
 {% endif %}
 </div>
 <section id="audit"><h2>Recent Audit Entries</h2>

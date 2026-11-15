@@ -1,6 +1,7 @@
 """Create a consistent backup or copy a verified backup to a new database path."""
 import argparse
 from contextlib import closing
+import os
 from pathlib import Path
 import sqlite3
 
@@ -9,9 +10,9 @@ def copy_database(source, target):
     with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as original:
         if original.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise RuntimeError("Source failed SQLite integrity check.")
-        if original.execute("PRAGMA user_version").fetchone()[0] not in (1, 2):
+        if original.execute("PRAGMA user_version").fetchone()[0] not in (1, 2, 3):
             raise RuntimeError("Source schema version is unsupported.")
-        target.touch(exist_ok=False)
+        os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
         try:
             with closing(sqlite3.connect(target)) as destination:
                 original.backup(destination)
