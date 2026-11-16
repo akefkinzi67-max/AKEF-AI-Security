@@ -149,7 +149,7 @@ $install.Add_Click({
         $env:NAVIQRA_FRIGATE_URL = $nextOrigin
         if ($nextToken) { $env:NAVIQRA_FRIGATE_TOKEN = [Net.NetworkCredential]::new('', (ConvertTo-SecureString $nextToken)).Password }
         $env:NAVIQRA_DB = Join-Path $directory 'station.sqlite3'
-        $started = Start-Process -FilePath $python -ArgumentList '-m','waitress',"--listen=$listen",'--call','station:create_app' -WindowStyle Hidden -PassThru
+        $started = Start-Process -FilePath $python -ArgumentList '-m','waitress',"--listen=$listen",'--threads=24','--call','station:create_app' -WindowStyle Hidden -PassThru
         if ($PilotSmokeTest) { $script:pilotProcess = $started }
         $ready = $null
         for ($attempt = 0; $attempt -lt 12; $attempt++) {
@@ -202,7 +202,7 @@ if ($PilotSmokeTest) {
         $pilotSettings = Get-Content -LiteralPath $secretsFile -Raw | ConvertFrom-Json
         $env:NAVIQRA_SECRET = [Net.NetworkCredential]::new('', (ConvertTo-SecureString $pilotSettings.secret)).Password
         $env:NAVIQRA_DB = $restored
-        $script:pilotProcess = Start-Process -FilePath $script:pilotPython -ArgumentList '-m','waitress',"--listen=$listen",'--call','station:create_app' -WindowStyle Hidden -PassThru
+        $script:pilotProcess = Start-Process -FilePath $script:pilotPython -ArgumentList '-m','waitress',"--listen=$listen",'--threads=24','--call','station:create_app' -WindowStyle Hidden -PassThru
         $ready = $false
         for ($attempt = 0; $attempt -lt 12; $attempt++) {
             Start-Sleep -Milliseconds 400

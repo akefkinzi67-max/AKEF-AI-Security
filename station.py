@@ -10,13 +10,14 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+from threading import BoundedSemaphore
 import time
 
 from flask import Flask, Response, abort, g, redirect, render_template, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from analytics import pos_exception_signal, register_forecast
-from cameras import fetch_clip, fetch_events, fetch_stats, origin, recording_url
+from cameras import fetch_clip, fetch_events, fetch_stats, live_jpegs, open_live_feed, origin, recording_url
 from monitor import save_events, timestamp
 from queue_tracking import estimates
 from commander import get_partner_xml, import_plu, tlog_csv
@@ -26,6 +27,7 @@ ROOT = Path(__file__).parent
 FIELDS = ("transaction_id", "line_id", "occurred_at", "kind", "sku", "quantity",
           "amount", "fuel_grade", "pump")
 SCHEMA_VERSION = 7
+CAMERA_LIMIT = 12
 
 
 class FuelQuantity:
@@ -136,6 +138,7 @@ def report_window(args, tz):
 
 def create_app(config=None):
     app = Flask(__name__)
+    live_connections = BoundedSemaphore(CAMERA_LIMIT)
     app.jinja_env.filters["usd"] = lambda cents: f"${Decimal(cents) / 100:,.2f}"
     app.config.update(
         DATABASE=os.getenv("NAVIQRA_DB", str(ROOT / "data" / "station.sqlite3")),
@@ -219,7 +222,7 @@ def create_app(config=None):
         if action == "setup":
             expected = os.getenv("NAVIQRA_SETUP_TOKEN", "")
             if len(expected) < 24 or not secrets.compare_digest(expected.encode(), request.form["token"].encode()):
-                abort(403)
+                return None
             if db.execute("SELECT 1 FROM station").fetchone():
                 abort(409)
             timezone_name = required(request.form["timezone"])
@@ -393,6 +396,10 @@ def create_app(config=None):
                 queue_zone and not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", queue_zone)
             ):
                 raise ValueError("Use Frigate configuration IDs for the camera and zone.")
+            if not db.execute("SELECT 1 FROM camera_setup WHERE camera=?", (camera,)).fetchone():
+                count = db.execute("SELECT COUNT(*) FROM camera_setup").fetchone()[0]
+                if count >= CAMERA_LIMIT:
+                    raise ValueError("All 12 dashboard camera positions are in use.")
             db.execute("""INSERT INTO camera_setup VALUES (?,?,?) ON CONFLICT(camera)
                 DO UPDATE SET protocol=excluded.protocol,queue_zone=excluded.queue_zone""",
                 (camera, protocol, queue_zone))
@@ -491,6 +498,8 @@ def create_app(config=None):
                     save_events(g.db, events)
                     message = f"Refreshed {len(events)} Frigate events."
                     audit(action, message)
+            if message is None:
+                return dashboard("The setup token was rejected. Check the token and try again.", 403)
             session["message"] = message
             return redirect("/")
         except OverflowError:
@@ -513,6 +522,9 @@ def create_app(config=None):
                 GROUP BY products.sku,code ORDER BY products.sku,code
             """).fetchall()
             if g.user["role"] != "employee":
+                cameras = db.execute("""SELECT c.camera,c.protocol FROM camera_setup c
+                    ORDER BY c.rowid LIMIT ?""", (CAMERA_LIMIT,)).fetchall()
+                context["wall_cameras"] = cameras + [None] * (CAMERA_LIMIT - len(cameras))
                 tz = ZoneInfo(station["timezone"])
                 today = datetime.now(tz).date()
                 try:
@@ -652,5 +664,41 @@ def create_app(config=None):
         if row is None:
             abort(404)
         return send_file(BytesIO(row["content"]), mimetype="video/mp4", conditional=True)
+
+    @app.get("/cameras/<camera>/live.mjpeg")
+    def camera_live(camera):
+        if g.user is None or g.user["role"] == "employee":
+            abort(403)
+        if not frigate or not g.db.execute("SELECT 1 FROM camera_setup WHERE camera=?", (camera,)).fetchone():
+            abort(404)
+        if not live_connections.acquire(blocking=False):
+            abort(503)
+        try:
+            upstream, boundary = open_live_feed(frigate, os.getenv("NAVIQRA_FRIGATE_TOKEN"), camera)
+        except ValueError:
+            live_connections.release()
+            abort(502)
+        except Exception:
+            live_connections.release()
+            raise
+
+        def frames():
+            try:
+                for jpeg in live_jpegs(upstream, boundary):
+                    yield (b"--naviqra\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                           + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n")
+            except OSError:
+                return
+
+        def close_feed():
+            try:
+                upstream.close()
+            finally:
+                live_connections.release()
+
+        response = Response(frames(), content_type="multipart/x-mixed-replace; boundary=naviqra")
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.call_on_close(close_feed)
+        return response
 
     return app

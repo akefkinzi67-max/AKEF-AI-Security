@@ -7,4 +7,4 @@ COPY migrations migrations
 COPY templates templates
 COPY static static
 USER naviqra
-CMD ["waitress-serve", "--listen=0.0.0.0:8080", "--call", "station:create_app"]
+CMD ["waitress-serve", "--listen=0.0.0.0:8080", "--threads=24", "--call", "station:create_app"]

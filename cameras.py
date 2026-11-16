@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 import math
 import re
+import time
 from urllib.error import URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -98,3 +99,56 @@ def fetch_clip(base, token, event_id):
     if len(clip) < 16 or clip[4:8] != b"ftyp":
         raise ValueError("Frigate did not return an MP4 clip.")
     return clip
+
+
+def open_live_feed(base, token, camera):
+    """Return Frigate's browser-ready MJPEG response for a configured camera."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", camera):
+        raise ValueError("Invalid camera name.")
+    headers = {"Accept": "multipart/x-mixed-replace"}
+    if token:
+        if urlsplit(base).scheme != "https" or not re.fullmatch(r"[A-Za-z0-9_.-]+", token):
+            raise ValueError("Frigate credentials require HTTPS.")
+        headers["Cookie"] = "frigate_token=" + token
+    endpoint = f"{origin(base)}/api/{camera}?fps=3&height=360"
+    try:
+        response = build_opener(NoRedirect()).open(Request(endpoint, headers=headers), timeout=5)
+    except (URLError, TimeoutError, OSError):
+        raise ValueError("Live camera feed is unavailable.") from None
+    boundary = response.headers.get_param("boundary")
+    if (response.headers.get_content_type() != "multipart/x-mixed-replace"
+        or not boundary or not re.fullmatch(r"[A-Za-z0-9_-]{1,70}", boundary)):
+        response.close()
+        raise ValueError("Frigate did not return an MJPEG feed.")
+    return response, boundary
+
+
+def live_jpegs(stream, boundary, seconds=45):
+    delimiter = b"\r\n--" + boundary.encode("ascii")
+    buffer = b"\r\n"
+    limit = 2 * 1024 * 1024
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        chunk = stream.read1(16384)
+        if not chunk:
+            return
+        buffer += chunk
+        while True:
+            first = buffer.find(delimiter)
+            if first < 0:
+                buffer = buffer[-len(delimiter):]
+                break
+            after = first + len(delimiter)
+            last = buffer.find(delimiter, after)
+            if last < 0:
+                buffer = buffer[first:]
+                break
+            part = buffer[after:last]
+            buffer = buffer[last:]
+            headers, separator, jpeg = part.partition(b"\r\n\r\n")
+            if (separator and b"content-type: image/jpeg" in headers.lower().split(b"\r\n")
+                and jpeg.startswith(b"\xff\xd8") and jpeg.endswith(b"\xff\xd9")
+                and len(jpeg) <= limit):
+                yield jpeg
+        if len(buffer) > limit + 8192:
+            return

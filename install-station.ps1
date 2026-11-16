@@ -16,6 +16,6 @@ if ($Monitor) {
     if ($LASTEXITCODE -ne 0) { throw 'Camera monitor stopped with an error.' }
 }
 if ($Start) {
-    & .venv/Scripts/waitress-serve.exe --listen=127.0.0.1:8080 --call station:create_app
+    & .venv/Scripts/waitress-serve.exe --listen=127.0.0.1:8080 --threads=24 --call station:create_app
     if ($LASTEXITCODE -ne 0) { throw 'Station service stopped with an error.' }
 }

@@ -21,3 +21,15 @@ nav a:first-child{background:#10396b;border-left:.2rem solid var(--gold)}
 #cameras form,#advisor form{margin:.65rem 0}
 #cameras button,#advisor button{background:#0b3156;color:#edf5ff}
 :focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.camera-wall{padding:1rem}
+.camera-wall-header{display:flex;flex-wrap:wrap;gap:.65rem;align-items:center;justify-content:space-between;margin-bottom:.75rem}
+.camera-wall-header h2{margin:0;font-size:1.35rem}
+.camera-wall-header div{display:flex;gap:.8rem;align-items:center}
+.camera-wall-header button{width:auto}
+.camera-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}
+.camera-tile{position:relative;display:grid;aspect-ratio:16/9;min-height:6rem;background:#021020;border:1px solid #24567f;border-radius:.55rem;overflow:hidden}
+.camera-tile[hidden]{display:none}
+.camera-tile img{position:absolute;width:100%;height:100%;object-fit:contain;background:#02070f}
+.camera-caption{position:absolute;inset:auto 0 0;display:flex;flex-wrap:wrap;justify-content:space-between;gap:.25rem;padding:.55rem .65rem;background:#020912e8;color:#edf5ff}
+.camera-caption span{color:#ffcc68}
+@media(max-width:620px){.camera-caption{font-size:.75rem}.camera-wall{padding:.65rem}}

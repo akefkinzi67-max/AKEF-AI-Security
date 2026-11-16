@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NAVIQRA Gas Station AI Management</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='station.css') }}">
+<script defer src="{{ url_for('static', filename='camera-wall.js') }}"></script>
 </head>
 <body>
 <header><div><strong>NAVIQRA</strong><br>Gas Station AI Management</div>
@@ -16,16 +17,19 @@
 {% macro dollars(cents) %}{{ cents | usd }}{% endmacro %}
 {% if g.user %}
 <nav aria-label="Station navigation"><a href="#overview">Dashboard</a><a href="#inventory">Inventory &amp; Stock</a>
-{% if totals %}<a href="#fuel">Fuel Management</a><a href="#purchasing">Purchasing</a><a href="#cameras">Cameras &amp; Events</a><a href="#pos">POS Review</a><a href="#advisor">Register Advisor</a><a href="#audit">Audit Log</a>{% endif %}
+{% if totals %}<a href="#camera-wall">Live Cameras</a><a href="#fuel">Fuel Management</a><a href="#purchasing">Purchasing</a><a href="#cameras">Cameras &amp; Events</a><a href="#pos">POS Review</a><a href="#advisor">Register Advisor</a><a href="#audit">Audit Log</a>{% endif %}
 </nav>
 {% endif %}
 <main id="overview">
 {% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
 {% if not station %}
-<section class="auth"><h1>Set up your station</h1><form method="post" action="/setup">{{ csrf() }}
-{{ field('Setup token','token','password') }}{{ field('Station name','name') }}
-<label>Station time zone<select name="timezone">{% for tz in ['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','America/Anchorage','Pacific/Honolulu'] %}<option>{{ tz }}</option>{% endfor %}</select></label>
-{{ field('Initial warehouse code','warehouse') }}{{ field('Owner username','username') }}{{ field('Owner password','password','password') }}<button>Initialize station</button></form></section>
+<section class="auth"><h1>Set up your station</h1><form method="post" action="/setup" data-station-setup>{{ csrf() }}
+<p class="notice" role="alert" tabindex="-1" data-setup-error hidden></p>
+{{ field('Setup token','token','password') }}<label>Station name<input name="name" value="{{ request.form.get('name', '') }}" required></label>
+<label>Station time zone<select name="timezone">{% for tz in ['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','America/Anchorage','Pacific/Honolulu'] %}<option {% if request.form.get('timezone') == tz %}selected{% endif %}>{{ tz }}</option>{% endfor %}</select></label>
+<label>Initial warehouse code<input name="warehouse" value="{{ request.form.get('warehouse', '') }}" required></label>
+<label>Owner username<input name="username" value="{{ request.form.get('username', '') }}" required></label>
+{{ field('Owner password','password','password') }}<button type="submit">Initialize station</button></form></section>
 {% elif not g.user %}
 <section class="auth"><h1>Sign in</h1><form method="post" action="/login">{{ csrf() }}
 <label>Username<input name="username" autocomplete="username" required></label>
@@ -33,6 +37,19 @@
 {% else %}
 <h1>Station Dashboard</h1>
 {% if totals %}
+<section class="camera-wall" id="camera-wall" aria-labelledby="camera-wall-title">
+<div class="camera-wall-header"><h2 id="camera-wall-title">Live Cameras</h2>
+<div><a href="#camera-add">Add camera</a>
+<button type="button" data-camera-toggle aria-controls="camera-grid" aria-expanded="false">Show all 12 cameras</button></div></div>
+<div class="camera-grid" id="camera-grid">
+{% for camera in wall_cameras %}
+<article class="camera-tile" data-camera-tile {% if loop.index > 4 %}hidden{% endif %}>
+{% if camera and frigate %}<img data-stream="{{ url_for('camera_live', camera=camera.camera) }}" alt="{{ camera.camera }} live view" hidden>{% endif %}
+<div class="camera-caption"><strong>{{ camera.camera if camera else 'Camera ' ~ loop.index }}</strong>
+<span data-camera-status>Not Connected</span></div>
+</article>
+{% endfor %}
+</div></section>
 <form class="report-filter" method="get" action="/">
 <label>Start date<input name="start" type="date" value="{{ request.args.get('start', '') }}"></label>
 <label>End date<input name="end" type="date" value="{{ request.args.get('end', '') }}"></label>
@@ -57,7 +74,7 @@
 </div>
 <div>
 <section id="cameras"><h2>Cameras &amp; Incidents</h2>
-<details><summary>Set up a camera</summary>
+<details id="camera-add" open><summary>Set up a camera</summary>
 <p>Frigate runs as a separate service. Add your RTSP stream, discover the camera through ONVIF, or configure a recorder channel in Frigate. Then enter its configuration ID here.</p>
 {% if frigate %}<p><a href="{{ frigate }}/" rel="noreferrer">Open Frigate camera settings</a></p>{% endif %}
 <form method="post" action="/camera-setup">{{ csrf() }}
@@ -102,12 +119,13 @@
 <section id="pos"><h2>Recent POS Exceptions</h2>
 {% for row in exceptions %}<p><b>{{ row.kind }}</b> · {{ row.transaction_id }}<br><small>{{ row.occurred_at }} · {{ row.source }}</small>{% if row.clip %}<br><a href="{{ row.clip }}" rel="noreferrer">Check recording near transaction time</a>{% endif %}</p>{% else %}<p>No POS exceptions have been imported.</p>{% endfor %}
 {% if frigate %}<form method="post" action="/source-camera">{{ csrf() }}{{ field('POS source identifier for this register','source') }}{{ field('Frigate camera name','camera') }}<button>Save camera mapping</button></form>{% endif %}</section>
-<section><h2>Business Guardian</h2>
+<section id="guardian"><h2>Business Guardian</h2>
+{% if camera_events %}<p><strong>Review camera activity.</strong> {{ camera_events | length }} recent Frigate detections are shown. Check restricted-zone alerts and retain relevant recordings.</p><a href="#cameras">Review camera events and recordings</a>{% endif %}
 {% for camera in health if camera.state in ('Offline', 'Stale') %}
 <p><strong>Check {{ camera.camera }}.</strong> Health was {{ camera.state | lower }} at {{ camera.checked }}. Open Frigate and verify capture and recording before relying on footage.</p>
 {% endfor %}
 {% set open_incidents = incidents | selectattr('reviewed', 'none') | list %}
-{% if open_incidents %}<p><strong>Review security incidents.</strong> {{ open_incidents | length }} open incidents are shown. Review each incident and save relevant footage before Frigate retention expires.</p>{% endif %}
+{% if open_incidents %}<p><strong>Review security incidents.</strong> {{ open_incidents | length }} open incidents are shown. Review each incident and save relevant footage before Frigate retention expires.</p><a href="#cameras">Open incident review</a>{% endif %}
 {% if exception_signal %}{% set day, count, total, current, baseline = exception_signal %}
 <p>Review {{ day }}: {{ count }} of {{ total }} imported transactions included POS exceptions ({{ current }}% versus {{ baseline }}% over prior observed dates). Check export coverage and review the transactions.</p>{% endif %}
 {% for row in stock if row.balance <= row.reorder %}
