@@ -15,6 +15,8 @@ Complete acceptance on an authorized test station or during an approved maintena
 - [ ] Obtain approved, sanitized T-Log and PLU examples and file layout documentation. Verify stable site/register and transaction/line identities, timestamps and offset, tender exclusions, event codes, quantities, fuel grades, pump IDs and price units.
 - [ ] Reconcile a closed period by store and fuel totals, then by refunds, voids, No Sale and line counts. Try reimporting the identical file and a conflicting revision. Verify the approved replay policy.
 - [ ] Compare local display, Commander export and camera timestamps against a trusted clock, including a midnight or daylight-saving boundary. Verify that a POS exception opens the correct camera footage.
+- [ ] Record the exact Commander 55.02.05 build suffix and the Verifone-authorized export method. Document T-Log and PLU samples with payment data removed, verified column mappings, the POS time zone, and an agreed comparison period. Have the site operator confirm expected totals before enabling any scheduled import.
+- [ ] Limit C-Site testing to the approved partner account and station scope. Confirm activity and error logs with the site operator. Record the approved authentication method and endpoint in the site's private acceptance record.
 
 ## Cameras, queues and alerts
 
@@ -23,6 +25,9 @@ Complete acceptance on an authorized test station or during an approved maintena
 - [ ] Simulate a camera interruption and Frigate interruption; verify outage incident, stale state and recovery. Confirm restricted-zone detection with known entries.
 - [ ] Verify the external receiver authenticates and deduplicates Idempotency-Key. Test temporary receiver failure, retry and a timeout after receiver acceptance. Verify one external notification per incident.
 - [ ] Define a single-camera queue zone per register. Compare manual headcounts with recent track counts at different light and traffic levels. Include occlusion, stationary people, exits, camera restart and duplicate detection. Record coverage and errors before using counts operationally.
+- [ ] Run the live wall with four cameras, then 12, on the intended Windows station computer and browser. Keep all tested tiles visible for at least 30 minutes while using sales reports and recording a stock action. Record application and browser CPU, peak memory, per-direction network throughput, and any stalled tiles. Measure Frigate processing and recording storage separately.
+- [ ] Disconnect an approved test feed and record the time until Not Connected appears and the time until playback resumes. Verify the other feeds and manager forms remain available. Confirm the authenticated MJPEG route remains inaccessible to employees and unauthenticated viewers.
+- [ ] Start actual operations with four cameras. Approve 12 only after the full wall and normal workstation workload pass the sustained test with enough headroom for peak traffic.
 
 ## Inventory and register staffing
 

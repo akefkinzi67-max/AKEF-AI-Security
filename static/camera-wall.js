@@ -2,76 +2,78 @@
 
 const toggle = document.querySelector("[data-camera-toggle]");
 if (toggle) {
-    const tiles = [...document.querySelectorAll("[data-camera-tile]")];
+    const grid = document.querySelector("#camera-grid");
+    const tiles = [...grid.querySelectorAll("[data-camera-tile]")];
+    const feeds = tiles.map(tile => ({
+        tile,
+        image: tile.querySelector("[data-camera]"),
+        status: tile.querySelector("[data-camera-status]"),
+        visible: false,
+        url: null
+    })).filter(feed => feed.image);
+    const byTile = new Map(feeds.map(feed => [feed.tile, feed]));
     const observer = new IntersectionObserver(entries => {
-        for (const entry of entries) {
-            const tile = entry.target;
-            tile.cameraVisible = entry.isIntersecting;
-            update(tile);
-        }
+        for (const entry of entries) byTile.get(entry.target).visible = entry.isIntersecting;
     });
+    for (const feed of feeds) observer.observe(feed.tile);
 
-    function stop(tile) {
-        clearTimeout(tile.cameraRetry);
-        tile.cameraRetry = null;
-        if (tile.cameraImage.hasAttribute("src")) tile.cameraImage.removeAttribute("src");
-    }
-
-    function update(tile) {
-        if (document.hidden || tile.hidden || !tile.cameraVisible) {
-            stop(tile);
-            return;
+    function show(feed, jpeg) {
+        const former = feed.url;
+        feed.url = jpeg ? URL.createObjectURL(new Blob([jpeg], {type: "image/jpeg"})) : null;
+        if (feed.url) feed.image.src = feed.url;
+        else {
+            feed.image.removeAttribute("src");
+            feed.image.hidden = true;
+            feed.status.textContent = "Not Connected";
         }
-        if (tile.cameraImage.hasAttribute("src") || tile.cameraRetry) return;
-        connect(tile);
+        if (former) URL.revokeObjectURL(former);
     }
 
-    function connect(tile) {
-        tile.cameraImage.src = tile.cameraImage.dataset.stream;
-        tile.cameraStatus.textContent = "Connecting...";
-        // A new request renews the bounded server stream and its authorization.
-        tile.cameraRetry = setTimeout(() => restart(tile), 48000);
-    }
-
-    function restart(tile) {
-        stop(tile);
-        tile.cameraRetry = null;
-        update(tile);
-    }
-
-    for (const tile of tiles) {
-        const image = tile.querySelector("[data-stream]");
-        if (!image) continue;
-        tile.cameraImage = image;
-        tile.cameraStatus = tile.querySelector("[data-camera-status]");
-        image.addEventListener("load", () => {
-            tile.cameraStatus.textContent = "Live feed";
-            image.hidden = false;
+    for (const feed of feeds) {
+        feed.image.addEventListener("load", () => {
+            feed.image.hidden = false;
+            feed.status.textContent = "Live feed";
         });
-        image.addEventListener("error", () => {
-            if (!image.hasAttribute("src")) return;
-            stop(tile);
-            image.hidden = true;
-            tile.cameraStatus.textContent = "Not Connected";
-            tile.cameraRetry = setTimeout(() => restart(tile), 5000);
-        });
-        observer.observe(tile);
+        feed.image.addEventListener("error", () => show(feed, null));
     }
+
+    async function refresh() {
+        const active = feeds.filter(feed => feed.visible && !feed.tile.hidden && !document.hidden);
+        for (const feed of feeds) {
+            if (feed.url && !active.includes(feed)) show(feed, null);
+        }
+        try {
+            if (active.length) {
+                const names = new URLSearchParams();
+                for (const feed of active) names.append("camera", feed.image.dataset.camera);
+                const response = await fetch(grid.dataset.frameUrl + "?" + names, {
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (!response.ok) throw Error("Feed unavailable");
+                const data = await response.arrayBuffer();
+                const view = new DataView(data);
+                let offset = 0;
+                for (const feed of active) {
+                    const size = view.getUint32(offset);
+                    offset += 4;
+                    if (size > data.byteLength - offset) throw Error("Invalid feed");
+                    show(feed, size ? new Uint8Array(data, offset, size) : null);
+                    offset += size;
+                }
+            }
+        } catch {
+            for (const feed of active) show(feed, null);
+        } finally {
+            setTimeout(refresh, 330);
+        }
+    }
+    refresh();
 
     toggle.addEventListener("click", () => {
         const expand = toggle.getAttribute("aria-expanded") !== "true";
         toggle.setAttribute("aria-expanded", String(expand));
         toggle.textContent = expand ? "Show first 4 cameras" : "Show all 12 cameras";
-        for (const tile of tiles.slice(4)) {
-            tile.hidden = !expand;
-            if (tile.cameraImage) {
-                if (!expand) restart(tile);
-                else update(tile);
-            }
-        }
-    });
-    document.addEventListener("visibilitychange", () => {
-        for (const tile of tiles.filter(tile => tile.cameraImage)) restart(tile);
+        for (const tile of tiles.slice(4)) tile.hidden = !expand;
     });
 }
 

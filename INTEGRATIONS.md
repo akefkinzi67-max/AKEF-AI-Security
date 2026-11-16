@@ -24,7 +24,7 @@ Set NAVIQRA_FRIGATE_URL to the trusted Frigate HTTP(S) origin reachable by the s
 
 ### Dashboard live wall
 
-Use Frigate's camera setup wizard for an authorized RTSP input, an ONVIF-discovered address, or a compatible DVR/NVR channel. Open **Add camera** in the NAVIQRA dashboard, select the source type, and enter the matching Frigate camera ID. Frigate retains the device addresses and credentials. NAVIQRA serves the documented MJPEG feed through an authenticated same-origin route so the browser never receives the Frigate token. The dashboard shows four positions by default and can expand to 12. It opens visible feeds at up to 3 FPS at 360p. Streams are silent and are renewed periodically. Frigate handles demand for higher-quality streams, audio and playback.
+Use Frigate's camera setup wizard for an authorized RTSP input, an ONVIF-discovered address, or a compatible DVR/NVR channel. Open **Add camera** in the NAVIQRA dashboard, select the source type, and enter the matching Frigate camera ID. Frigate retains the device addresses and credentials. NAVIQRA opens shared Frigate MJPEG feeds and batches the latest JPEG frames of visible cameras into one authenticated request. This leaves room for normal dashboard requests when using HTTP/1.1. The browser never receives the Frigate token. The dashboard shows four positions by default and can expand to 12. It requests visible feeds at up to 3 FPS at 360p. Frigate handles higher-quality streams, audio and playback.
 
 [Frigate live view and inputs](https://docs.frigate.video/configuration/live/) · [Frigate MJPEG endpoint](https://docs.frigate.video/integrations/api/mjpeg-feed-camera-name-get/)
 

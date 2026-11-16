@@ -1,9 +1,11 @@
 """Read-only access to an operator-configured Frigate instance."""
 from datetime import datetime, timezone
+from http.client import HTTPException
 import json
 import math
 import re
 import time
+from threading import Lock, Thread
 from urllib.error import URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -152,3 +154,48 @@ def live_jpegs(stream, boundary, seconds=45):
                 yield jpeg
         if len(buffer) > limit + 8192:
             return
+
+
+class LiveFrames:
+    """Share one upstream feed per camera across short browser requests."""
+
+    def __init__(self, base, token):
+        self.base = base
+        self.token = token
+        self.lock = Lock()
+        self.cameras = {}
+
+    def snapshot(self, names):
+        with self.lock:
+            now = time.monotonic()
+            frames = []
+            for name in names:
+                feed = self.cameras.get(name)
+                if feed is None and len(self.cameras) < 12:
+                    feed = {"requested": now, "frame": None, "updated": 0}
+                    self.cameras[name] = feed
+                    Thread(target=self.capture, args=(name, feed), daemon=True).start()
+                if feed is not None:
+                    feed["requested"] = now
+                frames.append(feed["frame"] if feed and now - feed["updated"] < 3 else None)
+            return frames
+
+    def capture(self, name, feed):
+        while True:
+            with self.lock:
+                if time.monotonic() - feed["requested"] > 8:
+                    self.cameras.pop(name)
+                    return
+            try:
+                stream, boundary = open_live_feed(self.base, self.token, name)
+                with stream:
+                    for jpeg in live_jpegs(stream, boundary):
+                        with self.lock:
+                            if time.monotonic() - feed["requested"] > 8:
+                                self.cameras.pop(name)
+                                return
+                            feed["frame"] = jpeg
+                            feed["updated"] = time.monotonic()
+            except (ValueError, OSError, HTTPException):
+                pass
+            time.sleep(1)

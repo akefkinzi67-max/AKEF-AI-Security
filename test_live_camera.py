@@ -3,6 +3,8 @@ from base64 import b64decode
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
+import struct
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
@@ -70,6 +72,37 @@ def test_app(path, origin):
 
 
 class LiveCameraTest(unittest.TestCase):
+    def test_batched_frames_enforce_role_and_camera_allowlist(self):
+        with TemporaryDirectory() as scratch:
+            server = start_fixture(20)
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            path = Path(scratch) / "station.sqlite3"
+            app = test_app(path, f"http://127.0.0.1:{server.server_port}")
+            client = app.test_client()
+            endpoint = "/cameras/live-frames"
+            self.assertEqual(client.get(endpoint).status_code, 403)
+            with client.session_transaction() as session:
+                session["username"] = "manager"
+            self.assertEqual(client.get(endpoint + "?camera=unknown").status_code, 404)
+            self.assertEqual(client.get(endpoint + "?camera=x&camera=x").status_code, 400)
+            with closing(connect(path)) as db, db:
+                db.execute("INSERT INTO camera_setup VALUES ('fixture_camera','RTSP',NULL)")
+            frames = set()
+            until = time.monotonic() + 5
+            while len(frames) < 2 and time.monotonic() < until:
+                response = client.get(endpoint + "?camera=fixture_camera")
+                self.assertEqual(response.status_code, 200)
+                size = struct.unpack_from("!I", response.data)[0]
+                self.assertEqual(size, len(response.data) - 4)
+                if size:
+                    frames.add(response.data[4:])
+                sleep(.1)
+            self.assertEqual(frames, set(FRAMES))
+            with client.session_transaction() as session:
+                session["username"] = "employee"
+            self.assertEqual(client.get(endpoint + "?camera=fixture_camera").status_code, 403)
+
     def test_wall_mjpeg_forwarding_and_permissions(self):
         with TemporaryDirectory() as scratch:
             server = start_fixture()

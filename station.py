@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import struct
 from threading import BoundedSemaphore
 import time
 
@@ -17,7 +18,7 @@ from flask import Flask, Response, abort, g, redirect, render_template, request,
 from werkzeug.security import check_password_hash, generate_password_hash
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from analytics import pos_exception_signal, register_forecast
-from cameras import fetch_clip, fetch_events, fetch_stats, live_jpegs, open_live_feed, origin, recording_url
+from cameras import LiveFrames, fetch_clip, fetch_events, fetch_stats, live_jpegs, open_live_feed, origin, recording_url
 from monitor import save_events, timestamp
 from queue_tracking import estimates
 from commander import get_partner_xml, import_plu, tlog_csv
@@ -156,6 +157,7 @@ def create_app(config=None):
     frigate = os.getenv("NAVIQRA_FRIGATE_URL")
     if frigate:
         frigate = origin(frigate)
+    wall = LiveFrames(frigate, os.getenv("NAVIQRA_FRIGATE_TOKEN")) if frigate else None
     maps = {}
     for kind in ("TLOG", "PLU"):
         path = os.getenv(f"NAVIQRA_{kind}_MAP")
@@ -183,7 +185,7 @@ def create_app(config=None):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'; form-action 'self'"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' blob:; frame-ancestors 'none'; form-action 'self'"
         return response
 
     @app.get("/favicon.ico")
@@ -664,6 +666,24 @@ def create_app(config=None):
         if row is None:
             abort(404)
         return send_file(BytesIO(row["content"]), mimetype="video/mp4", conditional=True)
+
+    @app.get("/cameras/live-frames")
+    def camera_wall_frames():
+        if g.user is None or g.user["role"] == "employee":
+            abort(403)
+        names = request.args.getlist("camera")
+        if not 1 <= len(names) <= CAMERA_LIMIT or len(set(names)) != len(names):
+            abort(400)
+        configured = {row[0] for row in g.db.execute("SELECT camera FROM camera_setup")}
+        if not wall or any(name not in configured for name in names):
+            abort(404)
+        frames = wall.snapshot(names)
+        payload = bytearray()
+        for frame in frames:
+            payload.extend(struct.pack("!I", len(frame) if frame else 0))
+            if frame:
+                payload.extend(frame)
+        return Response(bytes(payload), mimetype="application/octet-stream")
 
     @app.get("/cameras/<camera>/live.mjpeg")
     def camera_live(camera):
