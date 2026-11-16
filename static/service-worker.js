@@ -5,7 +5,7 @@ const offline = `<!doctype html>
 <title>NAVIQRA Offline</title></head>
 <body><main><h1>NAVIQRA is offline</h1>
 <p>Reconnect to the authorized station network and try again. Cameras, recordings, sales, inventory, and sign-in require an active station connection.</p>
-<p><a href="/">Retry connection</a></p></main></body></html>`;
+<p><a href="/">Retry connection</a>. Sign in again if prompted.</p></main></body></html>`;
 
 self.addEventListener("install", event => event.waitUntil(self.skipWaiting()));
 self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));

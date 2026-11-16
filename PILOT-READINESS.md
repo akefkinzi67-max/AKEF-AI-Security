@@ -23,3 +23,14 @@ Ready for isolated field acceptance after the station owner approves site connec
 Use the [field acceptance checklist](FIELD-ACCEPTANCE.md). Record the station version and evidence for each acceptance item. Review governance for external alerts and footage, and plan a recovery exercise before using the build for live operations. Keep the Pilot running on loopback during initial acceptance.
 
 The workstation wall presents four cameras by default and batches visible frames when expanded. Treat loopback benchmark figures as synthetic estimates. Frigate inference, recording storage, active mobile clients, LAN traffic, and service-time assumptions require separate field evidence. See [phone and tablet installation](PHONE-AND-TABLET.md) for private HTTPS configuration.
+
+### Camera endurance baseline
+
+Windows Chrome ran the camera transport from `2e0875f` with synthetic loopback streams for 30 minutes in each mode. This run preceded the PWA changes. Each mode used 120 dashboard samples and checked a filtered sales export. Samples included temporary visibility drops, so the run does not establish uninterrupted display.
+
+| Cameras | Feed frames per camera | Source to NAVIQRA | NAVIQRA to Chrome | Chrome peak summed memory | Sales export median / p95 |
+| --- | --- | --- | --- | --- | --- |
+| 4 | 5,306–5,316 | 1.45 Mbps | 1.25 Mbps | 611 MiB | 16 / 343 ms |
+| 12 | 5,290–5,317 | 4.33 Mbps | 3.99 Mbps | 785 MiB | 16 / 31 ms |
+
+The controlled disconnection was displayed after 3.13 seconds and playback resumed after 1.36 seconds. The long run collected Chrome process CPU but tracked the Windows Python launcher instead of the full application process tree; discard those application CPU and memory fields. Use the separate short process-tree benchmark for an indicative application footprint and verify both modes under the station workload before acceptance.

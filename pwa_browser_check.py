@@ -6,7 +6,6 @@ from threading import Thread
 
 from playwright.sync_api import expect, sync_playwright
 from waitress import create_server
-from flask import g, request
 
 from station import connect
 from test_live_camera import start_fixture, test_app as make_test_app
@@ -56,7 +55,16 @@ def verify(page, context, base, viewport):
     assert page.evaluate("caches.keys()") == []
     context.set_offline(False)
     page.get_by_role("link", name="Retry connection").click()
-    expect(page.get_by_role("heading", name="Station Dashboard")).to_be_visible()
+    dashboard = page.get_by_role("heading", name="Station Dashboard")
+    signin = page.get_by_role("heading", name="Sign in")
+    expect(dashboard.or_(signin)).to_be_visible()
+    if signin.is_visible():
+        page.get_by_label("Username").fill("manager")
+        page.get_by_label("Password").fill("synthetic-wall-only")
+        page.get_by_role("button", name="Sign in").click()
+    expect(dashboard).to_be_visible()
+    page.locator("#camera-grid [data-camera-tile]").first.scroll_into_view_if_needed()
+    expect(page.locator("#camera-grid img:not([hidden])").first).to_be_visible(timeout=15000)
 
 
 def main():
@@ -65,14 +73,6 @@ def main():
         fixture = start_fixture(300)
         try:
             app = make_test_app(path, f"http://127.0.0.1:{fixture.server_port}")
-            @app.before_request
-            def camera_diagnostic():
-                if request.path == "/cameras/live-frames" and g.user is None:
-                    if camera_diagnostic.remaining:
-                        print(f"Anonymous camera poll: session cookie present={bool(request.cookies.get('session'))}", flush=True)
-                        camera_diagnostic.remaining -= 1
-
-            camera_diagnostic.remaining = 3
             with closing(connect(path)) as db, db:
                 db.execute("INSERT INTO camera_setup VALUES ('fixture_camera', 'RTSP', NULL)")
             server = create_server(app, host="127.0.0.1", port=0, threads=24)
