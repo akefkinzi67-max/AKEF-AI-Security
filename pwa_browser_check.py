@@ -6,6 +6,7 @@ from threading import Thread
 
 from playwright.sync_api import expect, sync_playwright
 from waitress import create_server
+from flask import g, request
 
 from station import connect
 from test_live_camera import start_fixture, test_app as make_test_app
@@ -13,8 +14,6 @@ from test_live_camera import start_fixture, test_app as make_test_app
 
 def verify(page, context, base, viewport):
     page.on("pageerror", lambda error: print(f"Browser error: {error}"))
-    page.on("response", lambda response: print(f"Camera request: HTTP {response.status}")
-            if "/cameras/live-frames?" in response.url and response.status != 200 else None)
     page.goto(base)
     page.get_by_label("Username").fill("manager")
     page.get_by_label("Password").fill("synthetic-wall-only")
@@ -66,6 +65,14 @@ def main():
         fixture = start_fixture(300)
         try:
             app = make_test_app(path, f"http://127.0.0.1:{fixture.server_port}")
+            @app.before_request
+            def camera_diagnostic():
+                if request.path == "/cameras/live-frames" and g.user is None:
+                    if camera_diagnostic.remaining:
+                        print(f"Anonymous camera poll: session cookie present={bool(request.cookies.get('session'))}", flush=True)
+                        camera_diagnostic.remaining -= 1
+
+            camera_diagnostic.remaining = 3
             with closing(connect(path)) as db, db:
                 db.execute("INSERT INTO camera_setup VALUES ('fixture_camera', 'RTSP', NULL)")
             server = create_server(app, host="127.0.0.1", port=0, threads=24)
@@ -80,7 +87,7 @@ def main():
                             profile.pop("default_browser_type", None)
                             context = browser.new_context(**profile, service_workers="allow")
                             try:
-                                verify(context.new_page(), context, f"http://127.0.0.1:{server.effective_port}/",
+                                verify(context.new_page(), context, f"http://localhost:{server.effective_port}/",
                                        profile["viewport"])
                                 print(f"{name}: WebKit emulation, portrait/landscape, four/12 tiles and offline privacy passed.")
                             finally:

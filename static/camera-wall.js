@@ -50,7 +50,9 @@ if (toggle) {
                 const timer = setTimeout(() => controller.abort(), 5000);
                 let response, data;
                 try {
-                    response = await fetch(grid.dataset.frameUrl + "?" + names, {signal: controller.signal});
+                    response = await fetch(grid.dataset.frameUrl + "?" + names, {
+                        signal: controller.signal, mode: "same-origin", credentials: "same-origin"
+                    });
                     if (response.ok) data = await response.arrayBuffer();
                 } finally {
                     clearTimeout(timer);
