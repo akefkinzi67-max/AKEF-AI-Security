@@ -47,10 +47,10 @@
 <section class="camera-wall" id="camera-wall" aria-labelledby="camera-wall-title">
 <div class="camera-wall-header"><h2 id="camera-wall-title">Live Cameras</h2>
 <div><a href="#camera-add">Add camera</a>
-<button type="button" data-camera-toggle aria-controls="camera-grid" aria-expanded="false">Show all 12 cameras</button></div></div>
-<div class="camera-grid" id="camera-grid" data-frame-url="{{ url_for('camera_wall_frames') }}">
+<button type="button" data-camera-toggle aria-controls="camera-grid" aria-expanded="true">Show first 4 cameras</button></div></div>
+<div class="camera-grid camera-grid-expanded" id="camera-grid" data-frame-url="{{ url_for('camera_wall_frames') }}">
 {% for camera in wall_cameras %}
-<article class="camera-tile" data-camera-tile {% if loop.index > 4 %}hidden{% endif %}>
+<article class="camera-tile" data-camera-tile>
 {% if camera and frigate %}<img data-camera="{{ camera.camera }}" alt="{{ camera.camera }} live view" hidden>{% endif %}
 <div class="camera-caption"><strong>{{ camera.camera if camera else 'Camera ' ~ loop.index }}</strong>
 <span data-camera-status>Not Connected</span></div>
