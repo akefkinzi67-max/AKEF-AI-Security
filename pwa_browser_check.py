@@ -12,6 +12,9 @@ from test_live_camera import start_fixture, test_app as make_test_app
 
 
 def verify(page, context, base, viewport):
+    page.on("pageerror", lambda error: print(f"Browser error: {error}"))
+    page.on("response", lambda response: print(f"Camera request: HTTP {response.status}")
+            if "/cameras/live-frames?" in response.url and response.status != 200 else None)
     page.goto(base)
     page.get_by_label("Username").fill("manager")
     page.get_by_label("Password").fill("synthetic-wall-only")
@@ -19,6 +22,7 @@ def verify(page, context, base, viewport):
     expect(page.get_by_role("heading", name="Station Dashboard")).to_be_visible()
     tiles = page.locator("#camera-grid [data-camera-tile]:visible")
     expect(tiles).to_have_count(4)
+    tiles.first.scroll_into_view_if_needed()
     expect(page.locator("#camera-grid img:not([hidden])").first).to_be_visible(timeout=15000)
     for size in (viewport, {"width": viewport["height"], "height": viewport["width"]}):
         page.set_viewport_size(size)
