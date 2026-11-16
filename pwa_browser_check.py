@@ -23,6 +23,13 @@ def verify(page, context, base, viewport):
     for size in (viewport, {"width": viewport["height"], "height": viewport["width"]}):
         page.set_viewport_size(size)
         assert page.evaluate("() => document.documentElement.scrollWidth <= innerWidth"), size
+        assert page.evaluate("""() => {
+            const grid = document.querySelector('#camera-grid').getBoundingClientRect();
+            return [...document.querySelectorAll('.camera-tile:not([hidden])')].every(tile => {
+                const bounds = tile.getBoundingClientRect();
+                return bounds.left >= grid.left - 1 && bounds.right <= grid.right + 1;
+            });
+        }"""), size
     page.set_viewport_size(viewport)
     page.get_by_role("button", name="Show all 12 cameras").click()
     expect(tiles).to_have_count(12)
