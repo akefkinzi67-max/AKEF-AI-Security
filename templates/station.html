@@ -3,25 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#071524">
 <title>NAVIQRA Gas Station AI Management</title>
+<link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='naviqra-192.png') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='station.css') }}">
 <script defer src="{{ url_for('static', filename='camera-wall.js') }}"></script>
+<script defer src="{{ url_for('static', filename='pwa.js') }}"></script>
 </head>
 <body>
 <header><div><strong>NAVIQRA</strong><br>Gas Station AI Management</div>
 {% if station %}<span>{{ station.name }}</span>{% endif %}
-{% if g.user %}<form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Sign out</button></form>{% endif %}
+<div class="header-actions"><a href="{{ url_for('static', filename='install.html') }}">Install NAVIQRA</a>
+{% if g.user %}<form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Sign out</button></form>{% endif %}</div>
 </header>
 {% macro csrf() %}<input type="hidden" name="csrf" value="{{ session.csrf }}">{% endmacro %}
 {% macro field(label, name, type='text') %}<label>{{ label }}<input name="{{ name }}" type="{{ type }}" required></label>{% endmacro %}
 {% macro dollars(cents) %}{{ cents | usd }}{% endmacro %}
 {% if g.user %}
-<nav aria-label="Station navigation"><a href="#overview">Dashboard</a><a href="#inventory">Inventory &amp; Stock</a>
-{% if totals %}<a href="#camera-wall">Live Cameras</a><a href="#fuel">Fuel Management</a><a href="#purchasing">Purchasing</a><a href="#cameras">Cameras &amp; Events</a><a href="#pos">POS Review</a><a href="#advisor">Register Advisor</a><a href="#audit">Audit Log</a>{% endif %}
+<nav aria-label="Station navigation"><a href="#overview">Dashboard</a>
+{% if totals %}<a href="#camera-wall">Live Cameras</a>{% endif %}<a href="#inventory">Inventory &amp; Stock</a>
+{% if totals %}<a href="#fuel">Fuel Management</a><a href="#purchasing">Purchasing</a><a href="#cameras">Cameras &amp; Events</a><a href="#pos">POS Review</a><a href="#advisor">Register Advisor</a><a href="#audit">Audit Log</a>{% endif %}
 </nav>
 {% endif %}
 <main id="overview">
-{% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
+<p class="notice" role="status" data-station-connection hidden>Connection unavailable. Camera feeds and station actions need the station network.</p>
+{% if message %}<p class="notice" role="status" data-operation-message>{{ message }}</p>{% endif %}
 {% if not station %}
 <section class="auth"><h1>Set up your station</h1><form method="post" action="/setup" data-station-setup>{{ csrf() }}
 <p class="notice" role="alert" tabindex="-1" data-setup-error hidden></p>
@@ -120,21 +127,22 @@
 {% for row in exceptions %}<p><b>{{ row.kind }}</b> · {{ row.transaction_id }}<br><small>{{ row.occurred_at }} · {{ row.source }}</small>{% if row.clip %}<br><a href="{{ row.clip }}" rel="noreferrer">Check recording near transaction time</a>{% endif %}</p>{% else %}<p>No POS exceptions have been imported.</p>{% endfor %}
 {% if frigate %}<form method="post" action="/source-camera">{{ csrf() }}{{ field('POS source identifier for this register','source') }}{{ field('Frigate camera name','camera') }}<button>Save camera mapping</button></form>{% endif %}</section>
 <section id="guardian"><h2>Business Guardian</h2>
-{% if camera_events %}<p><strong>Review camera activity.</strong> {{ camera_events | length }} recent Frigate detections are shown. Check restricted-zone alerts and retain relevant recordings.</p><a href="#cameras">Review camera events and recordings</a>{% endif %}
+<p>Rule-based checks use recorded station activity. Review the underlying records before acting.</p>
+{% if camera_events %}<p><strong>Review camera activity.</strong> {{ camera_events | length }} recent Frigate detections are shown. Confidence: unverified detections. Check restricted-zone alerts and retain relevant recordings.</p><a href="#cameras">Review camera events and recordings</a>{% endif %}
 {% for camera in health if camera.state in ('Offline', 'Stale') %}
-<p><strong>Check {{ camera.camera }}.</strong> Health was {{ camera.state | lower }} at {{ camera.checked }}. Open Frigate and verify capture and recording before relying on footage.</p>
+<p><strong>Check {{ camera.camera }}.</strong> Health was {{ camera.state | lower }} at {{ camera.checked }}. Confidence: {{ 'low, last check is stale' if camera.state == 'Stale' else 'based on repeated health checks' }}. Open Frigate and verify capture and recording before relying on footage.</p>
 {% endfor %}
 {% set open_incidents = incidents | selectattr('reviewed', 'none') | list %}
-{% if open_incidents %}<p><strong>Review security incidents.</strong> {{ open_incidents | length }} open incidents are shown. Review each incident and save relevant footage before Frigate retention expires.</p><a href="#cameras">Open incident review</a>{% endif %}
+{% if open_incidents %}<p><strong>Review security incidents.</strong> {{ open_incidents | length }} open incidents are shown. Confidence: recorded incidents awaiting review. Review each incident and save relevant footage before Frigate retention expires.</p><a href="#cameras">Open incident review</a>{% endif %}
 {% if exception_signal %}{% set day, count, total, current, baseline = exception_signal %}
-<p>Review {{ day }}: {{ count }} of {{ total }} imported transactions included POS exceptions ({{ current }}% versus {{ baseline }}% over prior observed dates). Check export coverage and review the transactions.</p>{% endif %}
+<p>Review {{ day }}: {{ count }} of {{ total }} imported transactions included POS exceptions ({{ current }}% versus {{ baseline }}% over prior observed dates). Confidence: limited by export coverage. Confirm the export is complete and review the transactions.</p>{% endif %}
 {% for row in stock if row.balance <= row.reorder %}
 {% set due = replenishment.get((row.sku, row.code), 0) %}
-<p><strong>Review replenishment for {{ row.name }}.</strong> {{ row.code }} has {{ row.balance }} on hand against a reorder point of {{ row.reorder }} and {{ due }} units due on open orders.
+<p><strong>Review replenishment for {{ row.name }}.</strong> {{ row.code }} has {{ row.balance }} on hand against a reorder point of {{ row.reorder }} and {{ due }} units due on open orders. Confidence: recorded stock and purchase orders.
 {% if due and row.balance + due > row.reorder %}Confirm the scheduled delivery.{% else %}Review demand and remaining coverage before ordering.{% endif %}</p>{% endfor %}
-{% if expiring %}<p>Review {{ expiring | length }} displayed lots due within 30 days or already expired.</p>{% endif %}
-{% if pending %}<p>Review unapplied POS lines before using posted merchandise margin.</p>{% endif %}
-{% if exceptions %}<p>Review recent POS exceptions and check recordings where a register camera is mapped.</p>{% endif %}
+{% if expiring %}<p>Review {{ expiring | length }} displayed lots due within 30 days or already expired. Confidence: recorded expiration dates. Check the physical labels and rotate or remove affected stock.</p>{% endif %}
+{% if pending %}<p>{{ [pending | length,50] | min }} unapplied POS lines are shown for this period. Confidence: posted margin covers reviewed lines only. <a href="#stock-posting">Review POS stock postings</a>.</p>{% endif %}
+{% if exceptions %}<p>{{ exceptions | length }} recent POS exceptions are shown. Confidence: imported events; confirm the register and timing before using recordings. <a href="#pos">Review POS exceptions</a>.</p>{% endif %}
 </section>
 <section id="advisor"><h2>Register Advisor</h2><p>Estimates use observed transaction days and {{ minutes }} minute(s) of service per visit. Each register is planned at 80% utilization.</p>
 <form method="post" action="/service-time">{{ csrf() }}{{ field('Minutes of service per visit','minutes','number') }}<button>Save service time</button></form>
@@ -195,7 +203,7 @@
 <h3>Expired or Expiring Lots</h3>
 {% for lot in expiring %}<p>{{ lot.expires }} · {{ lot.sku }} · {{ lot.warehouse }} · {{ lot.remaining }} on hand</p>{% else %}<p>No tracked lots expire within 30 days.</p>{% endfor %}
 </section>
-<section><h2>Post Sales to Inventory</h2>
+<section id="stock-posting"><h2>Post Sales to Inventory</h2>
 <p>Review the physical movement before posting. Use a posted sale ID for a refund or reversal. Skip lines already accounted for in your opening stock.</p>
 {% if pending | length > 50 %}<p>Showing 50 results. Filter by date to find older entries.</p>{% endif %}
 {% for row in pending[:50] %}

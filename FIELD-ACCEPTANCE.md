@@ -8,6 +8,8 @@ Complete acceptance on an authorized test station or during an approved maintena
 - [ ] On Windows, double-click Setup NAVIQRA.cmd, create the station in the browser wizard, and verify restart and sign-in. On Docker, confirm loopback binding, persistent volume, restart and optional camera monitor.
 - [ ] Verify owner, manager and employee access. Confirm an employee cannot open the reports or incident footage. Disable a test account and verify its existing session ends.
 - [ ] Back up to restricted storage and restore to an isolated directory. Compare sales totals, lot balances, operational logs and a playable saved clip. Measure backup time, restore time and recoverable data loss. Record the tested rollback procedure.
+- [ ] On approved iPhone, iPad, Android phone and Android tablet hardware, connect to the authorized HTTPS address. Verify installation to the Home Screen, portrait and landscape, touch controls, camera playback, and sign-out. Switch off the connection and confirm the offline screen contains no station data. Reconnect and verify sign-in and playback.
+- [ ] Verify private DNS resolution, TLS trust, cookie security, client authorization and network isolation. Confirm the station application port is bound to loopback. Verify VPN and remote gateway access separately if approved.
 
 ## Commander data and time
 

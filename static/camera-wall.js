@@ -46,11 +46,16 @@ if (toggle) {
             if (active.length) {
                 const names = new URLSearchParams();
                 for (const feed of active) names.append("camera", feed.image.dataset.camera);
-                const response = await fetch(grid.dataset.frameUrl + "?" + names, {
-                    signal: AbortSignal.timeout(5000)
-                });
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 5000);
+                let response, data;
+                try {
+                    response = await fetch(grid.dataset.frameUrl + "?" + names, {signal: controller.signal});
+                    if (response.ok) data = await response.arrayBuffer();
+                } finally {
+                    clearTimeout(timer);
+                }
                 if (!response.ok) throw Error("Feed unavailable");
-                const data = await response.arrayBuffer();
                 const view = new DataView(data);
                 let offset = 0;
                 for (const feed of active) {
@@ -96,7 +101,7 @@ if (setup) {
                 return;
             }
             const result = new DOMParser().parseFromString(await response.text(), "text/html");
-            const error = result.querySelector("[role=status]");
+            const error = result.querySelector("[data-operation-message]");
             message.textContent = error ? error.textContent.trim() : "Setup could not be completed. Check the form and retry.";
         } catch {
             message.textContent = "The station could not be reached. Retry without reentering your information.";

@@ -6,7 +6,7 @@ Set-Location -LiteralPath $PSScriptRoot
 
 $form = New-Object Windows.Forms.Form
 $form.Text = 'NAVIQRA Station Setup'
-$form.ClientSize = New-Object Drawing.Size(500, 365)
+$form.ClientSize = New-Object Drawing.Size(500, 415)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
@@ -26,15 +26,25 @@ $open.Location = New-Object Drawing.Point(265, 205)
 $open.Size = New-Object Drawing.Size(210, 33)
 $form.Controls.Add($open)
 $status = New-Object Windows.Forms.Label
-$status.Location = New-Object Drawing.Point(20, 250)
+$status.Location = New-Object Drawing.Point(20, 295)
 $status.Size = New-Object Drawing.Size(460, 50)
 $form.Controls.Add($status)
 $tokenBox = New-Object Windows.Forms.TextBox
 $tokenBox.ReadOnly = $true
-$tokenBox.Location = New-Object Drawing.Point(20, 315)
+$tokenBox.Location = New-Object Drawing.Point(20, 360)
 $tokenBox.Width = 455
 $tokenBox.Visible = $false
 $form.Controls.Add($tokenBox)
+$backupButton = New-Object Windows.Forms.Button
+$backupButton.Text = 'Back up station data'
+$backupButton.Location = New-Object Drawing.Point(20, 250)
+$backupButton.Size = New-Object Drawing.Size(235, 33)
+$form.Controls.Add($backupButton)
+$restoreButton = New-Object Windows.Forms.Button
+$restoreButton.Text = 'Create recovery copy'
+$restoreButton.Location = New-Object Drawing.Point(265, 250)
+$restoreButton.Size = New-Object Drawing.Size(210, 33)
+$form.Controls.Add($restoreButton)
 $urlLabel = New-Object Windows.Forms.Label
 $urlLabel.Location = New-Object Drawing.Point(20, 85)
 $urlLabel.AutoSize = $true
@@ -63,6 +73,7 @@ if ($PilotSmokeTest) {
     $listen = '127.0.0.1:28687'
 }
 $secretsFile = Join-Path $directory 'windows-setup.json'
+$backupFile = Join-Path $PSScriptRoot 'backup.py'
 if (Test-Path -LiteralPath $secretsFile) {
     $previous = Get-Content -LiteralPath $secretsFile -Raw | ConvertFrom-Json
     $frigateUrl.Text = [string]$previous.frigateUrl
@@ -79,6 +90,39 @@ $open.Add_Click({
         }
         Start-Process $url
     } catch { $status.Text = 'NAVIQRA is not running on local port 8080. Use Install and open NAVIQRA.' }
+})
+
+function Save-StationDatabaseCopy([string]$Source, [string]$Title) {
+    $python = Join-Path $PSScriptRoot '.venv/Scripts/python.exe'
+    if (-not (Test-Path -LiteralPath $python)) { throw 'Install NAVIQRA before copying the database.' }
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw 'The selected station database does not exist.' }
+    $destination = New-Object Windows.Forms.SaveFileDialog
+    $destination.Title = $Title
+    $destination.Filter = 'Station databases (*.sqlite3)|*.sqlite3'
+    $destination.FileName = "naviqra-$(Get-Date -Format yyyyMMdd-HHmmss).sqlite3"
+    try {
+        if ($destination.ShowDialog($form) -ne [Windows.Forms.DialogResult]::OK) { return }
+        if (Test-Path -LiteralPath $destination.FileName) { throw 'Choose a new filename to protect the existing copy.' }
+        & $python $backupFile $Source $destination.FileName
+        if ($LASTEXITCODE -ne 0) { throw 'The database could not be copied and verified.' }
+        $status.Text = 'Verified database copy saved at the selected destination.'
+    } finally { $destination.Dispose() }
+}
+
+$backupButton.Add_Click({
+    try { Save-StationDatabaseCopy (Join-Path $directory 'station.sqlite3') 'Save verified station backup' }
+    catch { $status.Text = $_.Exception.Message }
+})
+$restoreButton.Add_Click({
+    $source = New-Object Windows.Forms.OpenFileDialog
+    $source.Title = 'Choose a station backup'
+    $source.Filter = 'Station databases (*.sqlite3)|*.sqlite3'
+    try {
+        if ($source.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK) {
+            Save-StationDatabaseCopy $source.FileName 'Save recovery copy to a new file'
+        }
+    } catch { $status.Text = $_.Exception.Message }
+    finally { $source.Dispose() }
 })
 
 function New-SetupSecret {

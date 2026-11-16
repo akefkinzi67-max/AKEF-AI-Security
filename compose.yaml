@@ -8,6 +8,8 @@ services:
       NAVIQRA_SETUP_TOKEN: ${NAVIQRA_SETUP_TOKEN:-}
       NAVIQRA_FRIGATE_URL: ${NAVIQRA_FRIGATE_URL:-}
       NAVIQRA_FRIGATE_TOKEN: ${NAVIQRA_FRIGATE_TOKEN:-}
+      NAVIQRA_TRUSTED_HOSTS: ${NAVIQRA_TRUSTED_HOSTS:-localhost,127.0.0.1,[::1]}
+      NAVIQRA_HTTPS: ${NAVIQRA_HTTPS:-0}
     volumes:
       - station-data:/app/data
   camera-monitor:

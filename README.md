@@ -1,5 +1,7 @@
 # NAVIQRA Gas Station AI Management
 
+The Windows launcher starts the station server. See [phone and tablet installation](PHONE-AND-TABLET.md) for the PWA and approved private HTTPS configuration.
+
 Local review build. The station starts empty and operates independently of the POS. Use synthetic inputs for review. Keep the service on loopback until station security, data retention and deployment acceptance are complete.
 
 ## Local installation
@@ -37,6 +39,8 @@ The import format is NAVIQRA's normalized contract. See [station integrations](I
 Run `python backup.py data/station.sqlite3 /secure/path/station-backup.sqlite3` on a host with access to the database. Use an existing private directory and a new destination filename. The command uses SQLite's backup API and checks integrity. For Compose, make the volume available to a trusted maintenance process before copying. Stop the service before a restore, make a separate copy of the current database, then use the same command to copy a verified backup to a new database path. Set NAVIQRA_DB to the restored path and verify sign-in and reports locally before switching over. Retain the application secret in a separate secure store.
 
 Before updating, verify the backup and test the new version with a restored copy. Roll back using the previous application release and its matching database copy.
+
+The Windows launcher offers **Back up station data** and **Create recovery copy**. Both copy and verify SQLite data in a new file. To test a recovery, use the **Update an existing Windows installation** procedure with the verified recovery copy and a separate installation directory.
 
 ### Update an existing Windows installation
 

@@ -144,12 +144,15 @@ def post_sale(db, form, actor, required):
             or original["occurred_at"] > row["occurred_at"]):
             raise ValueError("The original posted sale does not match this transaction.")
         warehouse = original["warehouse"]
-        reversals = db.execute("SELECT COUNT(*),COALESCE(SUM(revenue_cents),0) FROM stock_postings WHERE original=?",
-                               (original_id,)).fetchone()
+        reversals = db.execute("""SELECT COUNT(*),COALESCE(SUM(revenue_cents),0),
+            COALESCE(MAX(mode='reverse'),0) FROM stock_postings WHERE original=?""",
+            (original_id,)).fetchone()
         if mode == "reverse":
             if reversals[0]:
                 raise ValueError("A void reversal requires a sale without prior refunds or reversals.")
             revenue = -original["revenue_cents"]
+        elif reversals[2]:
+            raise ValueError("The original sale was already reversed.")
         elif -revenue > original["revenue_cents"] + reversals[1]:
             raise ValueError("Refund exceeds the remaining posted sale revenue.")
         if mode in ("restock", "reverse"):

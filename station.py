@@ -190,6 +190,14 @@ def create_app(config=None):
 
     @app.get("/favicon.ico")
     def favicon():
+        return redirect("/static/naviqra-192.png")
+
+    @app.get("/service-worker.js")
+    def service_worker():
+        return send_file(ROOT / "static" / "service-worker.js", mimetype="text/javascript")
+
+    @app.get("/station-connection")
+    def station_connection():
         return "", 204
 
     @app.teardown_request

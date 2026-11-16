@@ -225,6 +225,29 @@ class StationTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT SUM(remaining) FROM lots").fetchone()[0], 7)
             self.assertEqual(db.execute("SELECT SUM(delta) FROM movements").fetchone()[0], 7)
 
+    def test_barcode_count_and_void_reversal_remain_consistent(self):
+        self.assertEqual(self.post("product", sku="W", name="Water", barcode="00001", reorder=2).status_code, 302)
+        self.assertEqual(self.post("product", sku="D", name="Duplicate", barcode="00001", reorder=0).status_code, 409)
+        self.assertEqual(self.post("movement", sku="W", warehouse="A", reason="Receive", quantity=6).status_code, 302)
+        self.assertEqual(self.post("movement", sku="W", warehouse="A", reason="Count", quantity=5).status_code, 302)
+        self.assertEqual(self.post("movement", sku="W", warehouse="A", reason="Damage", quantity=6).status_code, 400)
+        self.assertEqual(self.upload(
+            "=literal,1,2026-01-01T12:00:00Z,Sale,W,2,6.00,,\n"
+            "void,1,2026-01-01T12:02:00Z,Void,,0,0,,\n"
+            "refund,1,2026-01-01T12:05:00Z,Refund,W,0,0,,\n"
+        ).status_code, 302)
+        self.assertIn(b"'=literal", self.client.get("/sales.csv").data)
+        self.assertEqual(self.post("post-sale", source="fixture", transaction_id="=literal",
+                                   line_id=1, mode="sell", warehouse="A").status_code, 302)
+        reversal = dict(source="fixture", transaction_id="void", line_id=1, mode="reverse", original=1)
+        self.assertEqual(self.post("post-sale", **reversal).status_code, 302)
+        self.assertEqual(self.post("post-sale", **reversal).status_code, 302)
+        self.assertEqual(self.post("post-sale", **dict(reversal, transaction_id="refund", mode="refund-only")).status_code, 400)
+        with closing(connect(self.path)) as db:
+            self.assertEqual(db.execute("SELECT SUM(remaining) FROM lots").fetchone()[0], 5)
+            self.assertEqual(db.execute("SELECT SUM(delta) FROM movements").fetchone()[0], 5)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM stock_postings").fetchone()[0], 2)
+
     def test_existing_database_upgrade_preserves_stock(self):
         path = self.path.with_name("legacy.db")
         with closing(connect(path)) as db:
@@ -282,6 +305,43 @@ class StationTest(unittest.TestCase):
         throttled = self.post("login", username="owner", password="synthetic-password")
         self.assertEqual(throttled.status_code, 429)
         self.assertGreater(int(throttled.headers["Retry-After"]), 0)
+
+    def test_pwa_metadata_and_privacy_routes(self):
+        client = self.client.application.test_client()
+        manifest = client.get("/static/manifest.webmanifest")
+        self.assertEqual(manifest.status_code, 200)
+        metadata = json.loads(manifest.data)
+        self.assertEqual((metadata["start_url"], metadata["scope"], metadata["display"]),
+                         ("/", "/", "standalone"))
+        manifest.close()
+        for icon in metadata["icons"]:
+            response = client.get(icon["src"])
+            self.assertEqual(response.mimetype, "image/png")
+            self.assertTrue(response.data.startswith(b"\x89PNG"))
+            response.close()
+        worker = client.get("/service-worker.js")
+        self.assertEqual(worker.mimetype, "text/javascript")
+        self.assertEqual(worker.headers["Cache-Control"], "no-store")
+        self.assertIn(b'cache: "no-store"', worker.data)
+        worker.close()
+        self.assertEqual(client.get("/station-connection").status_code, 204)
+        self.assertEqual(client.get("/cameras/live-frames?camera=private").status_code, 403)
+        self.assertEqual(client.get("/incidents/1/clip.mp4").status_code, 403)
+
+    def test_tls_session_cookie_and_trusted_station_name(self):
+        app = create_app({"TESTING": True, "DATABASE": self.path,
+                          "SECRET_KEY": "synthetic-tls-test-key-only-do-not-use",
+                          "SESSION_COOKIE_SECURE": True,
+                          "TRUSTED_HOSTS": ["station.example"]})
+        client = app.test_client()
+        self.assertEqual(client.get("/", base_url="https://untrusted.example").status_code, 400)
+        response = client.get("/", base_url="https://station.example")
+        self.assertEqual(response.status_code, 200)
+        cookie = response.headers["Set-Cookie"]
+        self.assertIn("Secure", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
 
     def test_supplier_update_and_pending_report_window(self):
         self.assertEqual(self.post("supplier", name="Before").status_code, 302)
