@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en-US">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#071524">
+<title>NAVIQRA Gas Station AI Management</title>
+<link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='naviqra-192.png') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='station.css') }}">
+<script defer src="{{ url_for('static', filename='camera-wall.js') }}"></script>
+<script defer src="{{ url_for('static', filename='pwa.js') }}"></script>
+</head>
+<body>
+<header><div><strong>NAVIQRA</strong><br>Gas Station AI Management</div>
+{% if station %}<span>{{ station.name }}</span>{% endif %}
+<div class="header-actions"><a href="{{ url_for('static', filename='install.html') }}">Install NAVIQRA</a>
+{% if g.user %}<form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Sign out</button></form>{% endif %}</div>
+</header>
+{% macro csrf() %}<input type="hidden" name="csrf" value="{{ session.csrf }}">{% endmacro %}
+{% macro field(label, name, type='text') %}<label>{{ label }}<input name="{{ name }}" type="{{ type }}" required></label>{% endmacro %}
+{% macro dollars(cents) %}{{ cents | usd }}{% endmacro %}
+{% if g.user %}
+<nav aria-label="Station navigation"><a href="#overview">Dashboard</a>
+{% if totals %}<a href="#camera-wall">Live Cameras</a>{% endif %}<a href="#inventory">Inventory &amp; Stock</a>
+{% if totals %}<a href="#fuel">Fuel Management</a><a href="#purchasing">Purchasing</a><a href="#cameras">Cameras &amp; Events</a><a href="#pos">POS Review</a><a href="#advisor">Register Advisor</a><a href="#audit">Audit Log</a>{% endif %}
+</nav>
+{% endif %}
+<main id="overview">
+<p class="notice" role="status" data-station-connection hidden>Connection unavailable. Camera feeds and station actions need the station network.</p>
+{% if message %}<p class="notice" role="status" data-operation-message>{{ message }}</p>{% endif %}
+{% if not station %}
+<section class="auth"><h1>Set up your station</h1><form method="post" action="/setup" data-station-setup>{{ csrf() }}
+<p class="notice" role="alert" tabindex="-1" data-setup-error hidden></p>
+{{ field('Setup token','token','password') }}<label>Station name<input name="name" value="{{ request.form.get('name', '') }}" required></label>
+<label>Station time zone<select name="timezone">{% for tz in ['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','America/Anchorage','Pacific/Honolulu'] %}<option {% if request.form.get('timezone') == tz %}selected{% endif %}>{{ tz }}</option>{% endfor %}</select></label>
+<label>Initial warehouse code<input name="warehouse" value="{{ request.form.get('warehouse', '') }}" required></label>
+<label>Owner username<input name="username" value="{{ request.form.get('username', '') }}" required></label>
+{{ field('Owner password','password','password') }}<button type="submit">Initialize station</button></form></section>
+{% elif not g.user %}
+<section class="auth"><h1>Sign in</h1><form method="post" action="/login">{{ csrf() }}
+<label>Username<input name="username" autocomplete="username" required></label>
+<label>Password<input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form></section>
+{% else %}
+<h1>Station Dashboard</h1>
+{% if totals %}
+<section class="camera-wall" id="camera-wall" aria-labelledby="camera-wall-title">
+<div class="camera-wall-header"><h2 id="camera-wall-title">Live Cameras</h2>
+<div><a href="#camera-add">Add camera</a>
+<button type="button" data-camera-toggle aria-controls="camera-grid" aria-expanded="true">Show first 4 cameras</button></div></div>
+<div class="camera-grid camera-grid-expanded" id="camera-grid" data-frame-url="{{ url_for('camera_wall_frames') }}">
+{% for camera in wall_cameras %}
+<article class="camera-tile" data-camera-tile>
+{% if camera and frigate %}<img data-camera="{{ camera.camera }}" alt="{{ camera.camera }} live view" hidden>{% endif %}
+<div class="camera-caption"><strong>{{ camera.camera if camera else 'Camera ' ~ loop.index }}</strong>
+<span data-camera-status>Not Connected</span></div>
+</article>
+{% endfor %}
+</div></section>
+<form class="report-filter" method="get" action="/">
+<label>Start date<input name="start" type="date" value="{{ request.args.get('start', '') }}"></label>
+<label>End date<input name="end" type="date" value="{{ request.args.get('end', '') }}"></label>
+<button>Filter reports</button><a href="/">Clear dates</a>
+</form>
+<div class="metrics"><section><h2>Net Imported Sales</h2><strong>{{ dollars(totals.cents) if totals.lines else 'No sales data' }}</strong></section>
+<section><h2>Net Fuel Sales</h2><strong>{{ dollars(totals.fuel_cents) if totals.lines else 'No sales data' }}</strong></section>
+<section><h2>Net Store Sales</h2><strong>{{ dollars(totals.store_cents) if totals.lines else 'No sales data' }}</strong></section>
+<section><h2>Imported Sale and Refund Lines</h2><strong>{{ totals.lines }}</strong></section>
+<section><h2>Posted Merchandise Gross Profit</h2><strong>{{ dollars(margin.revenue - margin.cogs) if margin.lines and not margin.unknown else 'Unavailable' }}</strong>
+<p>{{ margin.lines }} posted lines{% if margin.unknown %} · {{ margin.unknown }} allocations without cost{% endif %}</p></section></div>
+<div class="dashboard">
+<div>
+<section><h2>Sales Trend</h2><p>Most recent imported dates (UTC) · <a href="{{ url_for('export_sales', start=request.args.get('start', ''), end=request.args.get('end', '')) }}">Export sales CSV</a></p>
+{% if trend %}{% set peak = trend | map(attribute='cents') | map('abs') | max %}
+{% for row in trend %}<div class="bar"><span>{{ row.day }}</span><meter min="0" max="{{ peak or 1 }}" value="{{ row.cents | abs }}">{{ row.cents }}</meter><span>{{ dollars(row.cents) }}</span></div>{% endfor %}
+{% else %}<p>No sales data available.</p>{% endif %}</section>
+<section id="fuel"><h2>Fuel Sales</h2>
+{% if fuel %}<div class="table"><table><thead><tr><th>Grade</th><th>Pump</th><th>Net Gallons</th><th>Net Sales</th></tr></thead><tbody>
+{% for row in fuel %}<tr><td>{{ row.fuel_grade }}</td><td>{{ row.pump or 'Unavailable' }}</td><td>{{ row.gallons }}</td><td>{{ dollars(row.cents) }}</td></tr>{% endfor %}
+</tbody></table></div>{% else %}<p>No fuel lines have been imported.</p>{% endif %}</section>
+</div>
+<div>
+<section id="cameras"><h2>Cameras &amp; Incidents</h2>
+<details id="camera-add" open><summary>Set up a camera</summary>
+<p>Frigate runs as a separate service. Add your RTSP stream, discover the camera through ONVIF, or configure a recorder channel in Frigate. Then enter its configuration ID here.</p>
+{% if frigate %}<p><a href="{{ frigate }}/" rel="noreferrer">Open Frigate camera settings</a></p>{% endif %}
+<form method="post" action="/camera-setup">{{ csrf() }}
+{{ field('Frigate camera ID','camera') }}
+<label>Input source<select name="protocol"><option>RTSP</option><option>ONVIF</option><option>DVR/NVR</option></select></label>
+<label>Frigate queue zone ID (optional)<input name="queue_zone"></label><button>Save camera setup</button>
+</form></details>
+{% for camera in camera_setup %}
+<p><strong>{{ camera.camera }}</strong> · {{ camera.protocol }}{% if camera.queue_zone %} · Queue zone {{ camera.queue_zone }}{% endif %}</p>
+{% if frigate %}<form method="post" action="/camera-check">{{ csrf() }}<input type="hidden" name="camera" value="{{ camera.camera }}"><button>Check {{ camera.camera }} stream status</button></form>{% endif %}
+{% endfor %}
+{% if frigate %}
+<form method="post" action="/sync-cameras">{{ csrf() }}<button>Refresh Frigate events</button></form>
+{% for camera in health %}<p>{{ camera.camera }} · {{ camera.state }}<br><small>Last check {{ camera.checked }}</small></p>
+{% else %}<p>Awaiting the first automatic health check.</p>{% endfor %}
+{% for event in camera_events %}<p>{{ event.camera }} · {{ event.label }} · {{ event.occurred_at }}{% if event.zones %}<br>{{ event.zones }}{% endif %}
+{% if event.has_clip %}<br><a href="{{ frigate }}/api/events/{{ event.id }}/clip.mp4" rel="noreferrer">Open event clip</a>{% endif %}</p>
+<details><summary>Log incident</summary><form method="post" action="/incident">{{ csrf() }}
+<input name="event" value="{{ event.id }}" type="hidden">{{ field('Incident notes','detail') }}<button>Record incident</button></form></details>
+{% else %}<p>No events have been recorded in NAVIQRA.</p>{% endfor %}
+{% else %}<p>Configure a Frigate server to retrieve events.</p>{% endif %}
+<details><summary>Record manual incident</summary><form method="post" action="/incident">{{ csrf() }}{{ field('Camera or location','camera') }}{{ field('Incident notes','detail') }}<button>Record incident</button></form></details>
+{% for incident in incidents %}
+<details><summary>#{{ incident.id }} · {{ incident.category }} · {{ incident.camera }}{% if not incident.reviewed %} · Open{% endif %}</summary>
+<p>{{ incident.opened }} · {{ incident.detail }}</p>
+{% if incident.saved %}<video controls preload="none" src="{{ url_for('incident_clip', incident=incident.id) }}"></video>
+<a href="{{ url_for('incident_clip', incident=incident.id) }}" download>Download saved clip</a>
+{% elif incident.has_clip and frigate %}<form method="post" action="/save-clip">{{ csrf() }}<input type="hidden" name="incident" value="{{ incident.id }}"><button>Save Frigate clip</button></form>{% endif %}
+{% if not incident.reviewed %}<form method="post" action="/review-incident">{{ csrf() }}<input type="hidden" name="incident" value="{{ incident.id }}"><button>Mark incident reviewed</button></form>
+{% else %}<p>Reviewed by {{ incident.reviewer }} · {{ incident.reviewed }}</p>{% endif %}
+{% if incident.saved and incident.reviewed and g.user.role == 'owner' %}
+<details><summary>Remove saved footage</summary><form method="post" action="/delete-clip">{{ csrf() }}<input type="hidden" name="incident" value="{{ incident.id }}"><button>Remove local clip</button></form></details>{% endif %}
+</details>
+{% endfor %}
+{% if delivery %}
+<details><summary>External alert delivery</summary>
+{% for alert in delivery %}
+<p>Incident #{{ alert.incident }} · {{ alert.attempts }} attempt(s) · {% if alert.delivered is not none %}Accepted by receiver{% elif alert.attempts >= 8 %}Retries exhausted{% else %}Waiting for retry{% endif %}{% if alert.error %}<br>{{ alert.error }}{% endif %}</p>
+{% endfor %}
+</details>{% endif %}
+</section>
+<section id="pos"><h2>Recent POS Exceptions</h2>
+{% for row in exceptions %}<p><b>{{ row.kind }}</b> · {{ row.transaction_id }}<br><small>{{ row.occurred_at }} · {{ row.source }}</small>{% if row.clip %}<br><a href="{{ row.clip }}" rel="noreferrer">Check recording near transaction time</a>{% endif %}</p>{% else %}<p>No POS exceptions have been imported.</p>{% endfor %}
+{% if frigate %}<form method="post" action="/source-camera">{{ csrf() }}{{ field('POS source identifier for this register','source') }}{{ field('Frigate camera name','camera') }}<button>Save camera mapping</button></form>{% endif %}</section>
+<section id="guardian"><h2>Business Guardian</h2>
+<p>Rule-based checks use recorded station activity. Review the underlying records before acting.</p>
+{% if camera_events %}<p><strong>Review camera activity.</strong> {{ camera_events | length }} recent Frigate detections are shown. Confidence: unverified detections. Check restricted-zone alerts and retain relevant recordings.</p><a href="#cameras">Review camera events and recordings</a>{% endif %}
+{% for camera in health if camera.state in ('Offline', 'Stale') %}
+<p><strong>Check {{ camera.camera }}.</strong> Health was {{ camera.state | lower }} at {{ camera.checked }}. Confidence: {{ 'low, last check is stale' if camera.state == 'Stale' else 'based on repeated health checks' }}. Open Frigate and verify capture and recording before relying on footage.</p>
+{% endfor %}
+{% set open_incidents = incidents | selectattr('reviewed', 'none') | list %}
+{% if open_incidents %}<p><strong>Review security incidents.</strong> {{ open_incidents | length }} open incidents are shown. Confidence: recorded incidents awaiting review. Review each incident and save relevant footage before Frigate retention expires.</p><a href="#cameras">Open incident review</a>{% endif %}
+{% if exception_signal %}{% set day, count, total, current, baseline = exception_signal %}
+<p>Review {{ day }}: {{ count }} of {{ total }} imported transactions included POS exceptions ({{ current }}% versus {{ baseline }}% over prior observed dates). Confidence: limited by export coverage. Confirm the export is complete and review the transactions.</p>{% endif %}
+{% for row in stock if row.balance <= row.reorder %}
+{% set due = replenishment.get((row.sku, row.code), 0) %}
+<p><strong>Review replenishment for {{ row.name }}.</strong> {{ row.code }} has {{ row.balance }} on hand against a reorder point of {{ row.reorder }} and {{ due }} units due on open orders. Confidence: recorded stock and purchase orders.
+{% if due and row.balance + due > row.reorder %}Confirm the scheduled delivery.{% else %}Review demand and remaining coverage before ordering.{% endif %}</p>{% endfor %}
+{% if expiring %}<p>Review {{ expiring | length }} displayed lots due within 30 days or already expired. Confidence: recorded expiration dates. Check the physical labels and rotate or remove affected stock.</p>{% endif %}
+{% if pending %}<p>{{ [pending | length,50] | min }} unapplied POS lines are shown for this period. Confidence: posted margin covers reviewed lines only. <a href="#stock-posting">Review POS stock postings</a>.</p>{% endif %}
+{% if exceptions %}<p>{{ exceptions | length }} recent POS exceptions are shown. Confidence: imported events; confirm the register and timing before using recordings. <a href="#pos">Review POS exceptions</a>.</p>{% endif %}
+</section>
+<section id="advisor"><h2>Register Advisor</h2><p>Estimates use historical weekday and hourly averages and {{ minutes }} minute(s) of service per visit. Each register is planned at 80% utilization.</p>
+<form method="post" action="/service-time">{{ csrf() }}{{ field('Minutes of service per visit','minutes','number') }}<button>Save service time</button></form>
+{% if forecast_error is not none %}<p>Historical mean absolute error: {{ forecast_error }} transactions per hour across {{ validation_hours }} evaluated hours ({{ evaluated_days }} observed days).</p>{% endif %}
+<p>Evidence is limited until at least six dates are observed for the weekday and at least three have sales in the hour. Use staffing estimates as a planning input and verify export coverage.</p>
+{% if advice %}<h3>Top Observed Peak Hours</h3>{% endif %}
+{% for weekday, hour, observations, rate, registers, overloaded in advice %}<p>{{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][weekday] }} {{ '%02d:00' | format(hour) }} · {{ rate }} per hour · {{ observations }} observed days{% if observations < 6 or schedule[weekday][hour][6] < 3 %} · Limited evidence{% else %} · {{ registers }} planned register(s) · Higher sample coverage{% if overloaded %} · Estimated demand exceeds two-register capacity{% endif %}{% endif %}</p>
+{% else %}<p>Import sales from at least three dates for the same weekday to see estimates.</p>{% endfor %}</section>
+<section><h2>Weekly Register Schedule</h2><details><summary>View all 24 hours for seven days</summary>
+<div class="table"><table><thead><tr><th>Local hour</th>{% for day in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}<th>{{ day }}</th>{% endfor %}</tr></thead><tbody>
+{% for hour in range(24) %}<tr><th>{{ '%02d:00' | format(hour) }}</th>
+{% for day in schedule %}{% set entry = day[hour] %}<td>{% if entry %}{{ entry[3] }} tx{% if entry[2] >= 6 and entry[6] >= 3 %} / {{ entry[4] }} reg.{% if entry[5] %} +{% endif %}{% endif %}{% else %}—{% endif %}</td>{% endfor %}</tr>{% endfor %}
+</tbody></table></div></details>
+{% if queue %}<p>Manual observation: {{ queue.waiting }} waiting at {{ queue.camera }} · {{ queue.observed }}</p>{% endif %}
+{% for estimate in queue_estimates %}
+<p>{{ estimate.camera }} · {{ estimate.queue_zone }} · {% if estimate.observed is not none %}{{ estimate.waiting }} recently tracked · Low confidence until calibrated{% else %}Queue estimate unavailable · No recent tracking updates{% endif %}</p>
+{% endfor %}
+<details><summary>Record a queue observation</summary><form method="post" action="/queue">{{ csrf() }}
+{{ field('Camera or register','camera') }}{{ field('Observed time (ISO 8601 with UTC offset)','observed') }}{{ field('People waiting','waiting','number') }}<button>Record queue observation</button></form></details>
+</section>
+</div>
+</div>
+{% endif %}
+<section id="inventory"><h2>Inventory &amp; Stock</h2>
+{% if stock %}<div class="table"><table><thead><tr><th>SKU</th><th>Product</th><th>Warehouse</th><th>On Hand</th><th>Status</th></tr></thead><tbody>
+{% for row in stock %}<tr><td>{{ row.sku }}</td><td>{{ row.name }}</td><td>{{ row.code }}</td><td>{{ row.balance }}</td><td>{% if row.balance <= row.reorder %}<strong class="gold">Reorder</strong>{% else %}In stock{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>{% else %}<p>No products have been created.</p>{% endif %}</section>
+{% if totals %}
+<section id="purchasing"><h2>Purchasing &amp; Invoices</h2>
+<div class="forms">
+<form action="/supplier" method="post">{{ csrf() }}{{ field('Supplier name','name') }}<label>Contact<input name="contact" maxlength="250"></label><button>Add supplier</button></form>
+{% if suppliers %}
+<form action="/purchase" method="post">{{ csrf() }}
+<label>Supplier<select name="supplier">{% for supplier in suppliers %}<option value="{{ supplier.id }}">{{ supplier.name }}</option>{% endfor %}</select></label>
+{{ field('Purchase order number','number') }}{{ field('Order date','ordered','date') }}{{ field('Receiving warehouse','warehouse') }}
+<label>Order lines (SKU, quantity)<textarea name="items" rows="4" required></textarea></label><button>Create purchase order</button></form>
+<form action="/invoice" method="post">{{ csrf() }}
+<label>Supplier<select name="supplier">{% for supplier in suppliers %}<option value="{{ supplier.id }}">{{ supplier.name }}</option>{% endfor %}</select></label>
+{{ field('Invoice number','number') }}{{ field('Invoice date','purchased','date') }}{{ field('Receiving warehouse','warehouse') }}
+<label>Purchase order ID (optional)<input name="order" type="number" min="1"></label>
+<label>Lines (SKU, quantity, unit cost in USD, expiration date or blank)<textarea name="items" rows="4" required></textarea></label><button>Receive invoice</button></form>
+{% endif %}
+</div>
+{% if suppliers %}<details><summary>Manage suppliers</summary>
+{% for supplier in suppliers %}<form action="/update-supplier" method="post">{{ csrf() }}
+<input type="hidden" name="supplier" value="{{ supplier.id }}">
+<label>Supplier name<input name="name" value="{{ supplier.name }}" required></label>
+<label>Contact<input name="contact" maxlength="250" value="{{ supplier.contact }}"></label>
+<button>Save supplier</button></form>{% endfor %}
+</details>{% endif %}
+<h3>Purchase Orders</h3>
+{% for order in orders %}
+<p>#{{ order.id }} · {{ order.number }} · {{ order.name }} · {{ order.ordered }} · {{ order.warehouse }} · {{ order.status }} · {{ order.received_units }}/{{ order.ordered_units }} units across {{ order.receipts }} invoices</p>
+{% if order.status == 'Open' %}<form action="/cancel-purchase" method="post">{{ csrf() }}<input type="hidden" name="order" value="{{ order.id }}"><button>Cancel purchase order {{ order.number }}</button></form>{% endif %}
+{% else %}<p>No purchase orders have been created.</p>{% endfor %}
+<h3>Received Invoices</h3>
+{% for invoice in invoices %}<p>{{ invoice.purchased }} · {{ invoice.name }} · {{ invoice.number }} · {{ invoice.warehouse }} · {{ dollars(invoice.cents) }}</p>{% else %}<p>No invoices have been received.</p>{% endfor %}
+<h3>Expired or Expiring Lots</h3>
+{% for lot in expiring %}<p>{{ lot.expires }} · {{ lot.sku }} · {{ lot.warehouse }} · {{ lot.remaining }} on hand</p>{% else %}<p>No tracked lots expire within 30 days.</p>{% endfor %}
+</section>
+<section id="stock-posting"><h2>Post Sales to Inventory</h2>
+<p>Review the physical movement before posting. Use a posted sale ID for a refund or reversal. Skip lines already accounted for in your opening stock.</p>
+{% if pending | length > 50 %}<p>Showing 50 results. Filter by date to find older entries.</p>{% endif %}
+{% for row in pending[:50] %}
+<details><summary>{{ row.occurred_at }} · {{ row.kind }} · {{ row.source }} / {{ row.transaction_id }} / {{ row.line_id }} · {{ row.sku }} × {{ row.quantity }}</summary>
+<form action="/post-sale" method="post">{{ csrf() }}
+<input type="hidden" name="source" value="{{ row.source }}"><input type="hidden" name="transaction_id" value="{{ row.transaction_id }}"><input type="hidden" name="line_id" value="{{ row.line_id }}">
+<label>Action<select name="mode"><option value="" selected disabled>Select action</option>
+{% if row.kind == 'Sale' %}<option value="sell">Deduct sold units</option>{% endif %}
+{% if row.kind == 'Refund' %}<option value="restock">Refund and restock</option><option value="refund-only">Refund without restocking</option>{% endif %}
+{% if row.kind == 'Void' %}<option value="reverse">Reverse original posted sale</option>{% endif %}
+<option value="skip">Record as reviewed without a stock effect</option>
+</select></label>
+{% if row.kind == 'Sale' %}<label>Warehouse<input name="warehouse"></label>{% endif %}
+{% if row.kind in ('Refund','Void') %}<label>Original posting ID<input name="original" type="number"></label>{% endif %}
+<button>Save review</button></form></details>
+{% else %}<p>No unapplied merchandise or register event lines.</p>{% endfor %}
+<h3>Recent Postings</h3>
+{% for row in postings %}<p>#{{ row.id }} · {{ row.mode }} · {{ row.source }} / {{ row.transaction_id }} / {{ row.line_id }} · {{ row.sku }}</p>{% endfor %}
+</section>
+<div class="forms">
+<section><h2>Import Sales CSV</h2><form action="/import" method="post" enctype="multipart/form-data">{{ csrf() }}{{ field('Source identifier','source') }}
+<label>Normalized CSV<input name="export" type="file" accept=".csv" required></label><button>Import transactions</button></form></section>
+{% if vendor_maps %}
+<section><h2>Commander File Imports</h2>
+{% if 'tlog' in vendor_maps %}
+<form action="/tlog" method="post" enctype="multipart/form-data">{{ csrf() }}{{ field('Source identifier','source') }}
+<label>Mapped T-Log XML<input name="export" type="file" accept=".xml" required></label><button>Import T-Log</button></form>
+{% if partner and g.user.role == 'owner' %}<form action="/partner" method="post">{{ csrf() }}{{ field('Source identifier','source') }}<button>Fetch configured partner export</button></form>{% endif %}
+{% endif %}
+{% if 'plu' in vendor_maps %}
+<form action="/plu" method="post" enctype="multipart/form-data">{{ csrf() }}
+<label>Mapped PLU CSV<input name="export" type="file" accept=".csv" required></label><button>Import PLU catalog</button></form>
+{% endif %}</section>
+{% endif %}
+<section><h2>Add Product</h2><form method="post" action="/product">{{ csrf() }}{{ field('SKU','sku') }}{{ field('Product name','name') }}
+<label>Barcode<input name="barcode"></label>{{ field('Reorder quantity','reorder','number') }}<button>Add product</button></form></section>
+<section><h2>Stock Movement</h2><form method="post" action="/movement">{{ csrf() }}{{ field('SKU','sku') }}{{ field('Warehouse','warehouse') }}
+<label>Type<select name="reason">{% for option in ['Receive','Damage','Customer return','Vendor return','Count','Transfer'] %}<option>{{ option }}</option>{% endfor %}</select></label>
+{{ field('Quantity (absolute on-hand for Count)','quantity','number') }}<label>Destination (Transfer only)<input name="target"></label><button>Record movement</button></form></section>
+<section><h2>Add Warehouse</h2><form action="/warehouse" method="post">{{ csrf() }}{{ field('Warehouse code','warehouse') }}<button>Add warehouse</button></form></section>
+{% if g.user.role == 'owner' %}
+<section><h2>Add User</h2><form action="/user" method="post">{{ csrf() }}{{ field('Username','username') }}{{ field('Password','password','password') }}
+<label>Role<select name="role"><option value="manager">Manager</option><option value="employee">Employee</option></select></label><button>Create account</button></form></section>
+{% if accounts %}<section><h2>Manage Accounts</h2>
+{% for account in accounts %}
+<form action="/update-user" method="post">{{ csrf() }}
+<input type="hidden" name="username" value="{{ account.username }}"><strong>{{ account.username }}</strong>
+<label>Role<select name="role">{% for role in ['manager','employee'] %}<option value="{{ role }}" {% if role == account.role %}selected{% endif %}>{{ role | capitalize }}</option>{% endfor %}</select></label>
+<label>Status<select name="active"><option value="1" {% if account.active %}selected{% endif %}>Active</option><option value="0" {% if not account.active %}selected{% endif %}>Disabled</option></select></label>
+<button>Update account</button></form>
+{% endfor %}</section>{% endif %}
+{% endif %}
+</div>
+<section id="audit"><h2>Recent Audit Entries</h2>
+{% for row in history %}<p>{{ row.at }} UTC · {{ row.actor }} · {{ row.action }} · {{ row.detail }}</p>{% endfor %}</section>
+{% endif %}
+{% endif %}
+</main>
+</body>
+</html>

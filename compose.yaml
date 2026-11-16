@@ -1,0 +1,37 @@
+services:
+  station:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      NAVIQRA_SECRET: ${NAVIQRA_SECRET:?Set NAVIQRA_SECRET}
+      NAVIQRA_SETUP_TOKEN: ${NAVIQRA_SETUP_TOKEN:-}
+      NAVIQRA_FRIGATE_URL: ${NAVIQRA_FRIGATE_URL:-}
+      NAVIQRA_FRIGATE_TOKEN: ${NAVIQRA_FRIGATE_TOKEN:-}
+      NAVIQRA_TRUSTED_HOSTS: ${NAVIQRA_TRUSTED_HOSTS:-localhost,127.0.0.1,[::1]}
+      NAVIQRA_HTTPS: ${NAVIQRA_HTTPS:-0}
+    volumes:
+      - station-data:/app/data
+  camera-monitor:
+    profiles: [cameras]
+    build: .
+    command: ["python", "-m", "monitor"]
+    restart: unless-stopped
+    environment:
+      NAVIQRA_SECRET: ${NAVIQRA_SECRET:?Set NAVIQRA_SECRET}
+      NAVIQRA_FRIGATE_URL: ${NAVIQRA_FRIGATE_URL:-}
+      NAVIQRA_FRIGATE_TOKEN: ${NAVIQRA_FRIGATE_TOKEN:-}
+      NAVIQRA_EXPECTED_CAMERAS: ${NAVIQRA_EXPECTED_CAMERAS:-}
+      NAVIQRA_RESTRICTED_ZONES: ${NAVIQRA_RESTRICTED_ZONES:-}
+      NAVIQRA_MQTT_HOST: ${NAVIQRA_MQTT_HOST:-}
+      NAVIQRA_MQTT_PORT: ${NAVIQRA_MQTT_PORT:-8883}
+      NAVIQRA_MQTT_TOPIC: ${NAVIQRA_MQTT_TOPIC:-frigate/events}
+      NAVIQRA_MQTT_USERNAME: ${NAVIQRA_MQTT_USERNAME:-}
+      NAVIQRA_MQTT_PASSWORD: ${NAVIQRA_MQTT_PASSWORD:-}
+      NAVIQRA_ALERT_WEBHOOK: ${NAVIQRA_ALERT_WEBHOOK:-}
+      NAVIQRA_ALERT_TOKEN: ${NAVIQRA_ALERT_TOKEN:-}
+      NAVIQRA_ALERT_STATION_ID: ${NAVIQRA_ALERT_STATION_ID:-}
+    volumes:
+      - station-data:/app/data
+volumes:
+  station-data:

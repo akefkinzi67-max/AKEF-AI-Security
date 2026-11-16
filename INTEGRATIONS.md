@@ -1,0 +1,45 @@
+# Station integrations
+
+## Commander exports
+
+Use mappings built from an approved schema and a sanitized sample for the installed Commander release. NAVIQRA provides no default Commander mapping. The public Verifone release note confirms T-Log API availability for Petro Partner accounts, without publishing the endpoint, authentication exchange or response schema.
+
+- Set NAVIQRA_TLOG_MAP to a read-only JSON file. The top-level keys are events and lines (ElementTree selectors relative to the XML root and to each event), fields (a map keyed by the normalized CSV column names), and optional namespaces (prefix to URI).
+- For each field, provide scope (event or line) and path (an ElementTree selector for a text node). Optional values maps documented vendor event codes to NAVIQRA's event labels. Optional normalized columns can be omitted. Stable IDs, a timezone-aware timestamp and signed quantity and amount must already be available in the mapped data. Reports requiring attributes, sign transformations or other conversions need an adapter extension and an approved fixture.
+- Set NAVIQRA_PLU_MAP to a JSON file with sku, name and barcode keys whose values are the exact column headers of the approved UTF-8 PLU CSV export. Import updates name and barcode for matching SKUs, preserves reorder thresholds and rolls back on conflicting barcodes.
+- The optional owner-only partner transport is disabled until NAVIQRA_PARTNER_XML_URL and NAVIQRA_TLOG_MAP are configured. Use NAVIQRA_PARTNER_AUTH for the authorization header only if the approved partner contract explicitly provides a compatible HTTPS GET endpoint that returns XML. Pagination, token acquisition, and other contracts require vendor documentation and further implementation. Never substitute payment endpoints. Use the same source ID for identical transactions arriving through different import paths.
+- The mapped adapters and partner transport have synthetic tests. Compatibility with a live Commander or C-Site account remains unverified.
+
+[Verifone C-Site Management release notes](https://verifone.cloud/sites/default/files/inline-files/%5Bcurrent-date%3Ahtml_month%5D/C_SiteManagementReleaseNotes.Nov2025.pdf)
+
+For Commander 55.02.05, record the exact controller build and station configuration and obtain the vendor-approved export and record layout for that installation. Release notes identify the version and fixes; they do not document a NAVIQRA-compatible format. Before testing C-Site, confirm site onboarding, the Petro Partner account and the Tlog feature assignment for that site. Obtain the authorized endpoint contract, allowed operations, authentication and token lifecycle, pagination and replay behavior. The optional generic HTTPS XML transport is suitable only when the authorized contract matches its documented requirements. The PLU CSV map describes NAVIQRA's input contract and can only be enabled against a verified export. No payment operations are implemented.
+
+[Commander 55.02.05 release notes](https://verifone.cloud/sites/default/files/inline-files/%5Bcurrent-date%3Ahtml_month%5D/ReleaseNotes55.02.05.pdf) · [C-Site user guide](https://verifone.cloud/sites/default/files/inline-files/%5Bcurrent-date%3Ahtml_month%5D/C-SiteMgmtUserGuide.07232025.pdf)
+
+## Frigate and authorized cameras
+
+Run Frigate separately where its workload can be supported. Add approved cameras or recorder channels in Frigate using ONVIF discovery where supported or the device's documented RTSP stream URL. Configure detection, recording, zones and retention in Frigate. Synchronize POS and camera clocks.
+
+Set NAVIQRA_FRIGATE_URL to the trusted Frigate HTTP(S) origin reachable by the server and the manager's browser. Set NAVIQRA_FRIGATE_TOKEN to a valid least-privilege session token for the configured HTTPS origin if required. Frigate manages recording and retention. Keep its internal unauthenticated endpoints off public networks.
+
+### Dashboard live wall
+
+Use Frigate's camera setup wizard for an authorized RTSP input, an ONVIF-discovered address, or a compatible DVR/NVR channel. Open **Add camera** in the NAVIQRA dashboard, select the source type, and enter the matching Frigate camera ID. Frigate retains the device addresses and credentials. NAVIQRA opens shared Frigate MJPEG feeds and batches the latest JPEG frames of visible cameras into one authenticated request. This leaves room for normal dashboard requests when using HTTP/1.1. The browser never receives the Frigate token. The dashboard shows four positions by default and can expand to 12. It requests visible feeds at up to 3 FPS at 360p. Frigate handles higher-quality streams, audio and playback.
+
+[Frigate live view and inputs](https://docs.frigate.video/configuration/live/) · [Frigate MJPEG endpoint](https://docs.frigate.video/integrations/api/mjpeg-feed-camera-name-get/)
+
+Start automatic polling with `docker compose --profile cameras up --build -d`, or in a separate Windows process run `./install-station.ps1 -Monitor` with the same database and Frigate environment as the web process. Set NAVIQRA_EXPECTED_CAMERAS to a comma-delimited list of active Frigate camera names when missing cameras should be tracked from the first check. The monitor reads camera FPS every 30 seconds plus request time. Three consecutive zero or missing FPS readings create a dashboard incident. Three failed statistics requests create a Frigate service incident. Keep intentionally disabled cameras outside the monitored Frigate instance. A restored stream resets its failure count and leaves the incident available for review. The FPS signal does not verify the separate recording stream. Notifications appear inside the dashboard.
+
+Assign each register-specific POS source to its camera. A POS recording link requests 20 seconds on either side of the timestamp. For an imported Frigate event, a manager can open an incident and save its available MP4 in NAVIQRA for playback or download. Saved footage is included in database backups and limited to 16 MiB per clip and 256 MiB in total. Restrict backups to authorized personnel. Frigate recording availability, live devices, stream-role diagnostics and off-app alert delivery require further verification or integration.
+
+Queue observation accepts a camera or register identifier, a timezone-aware timestamp and a headcount. Recent manual observations are shown for five minutes. For automatic counts, configure the camera and queue-zone IDs in NAVIQRA and give the monitor a read-only TLS MQTT connection with NAVIQRA_MQTT_HOST, NAVIQRA_MQTT_PORT, NAVIQRA_MQTT_USERNAME and NAVIQRA_MQTT_PASSWORD. NAVIQRA_MQTT_TOPIC defaults to frigate/events. Use the verified broker trust store, or set NAVIQRA_MQTT_CA to a mounted private CA file. Use one camera per queue to avoid overlapping counts. The estimate counts each recent person track once per camera and zone and removes departures. A lack of recent events makes the estimate unavailable. Frigate publishes changes rather than a continuous occupancy snapshot; stationary people can be undercounted. Estimates remain low confidence pending calibration and are kept separate from staffing recommendations.
+
+[Frigate MQTT event contract](https://docs.frigate.video/integrations/mqtt/#frigateevents)
+
+### External alerts
+
+Set NAVIQRA_ALERT_WEBHOOK to a station-approved HTTPS receiver, NAVIQRA_ALERT_STATION_ID to a unique alphanumeric station ID, and optionally NAVIQRA_ALERT_TOKEN to a scoped bearer token. The monitor sends camera outages, Frigate service failures and restricted-zone incidents. The payload includes an incident ID, category, camera and timestamp. The receiver must enforce uniqueness on the Idempotency-Key header across retries, including cases when it accepts an alert but fails to respond. NAVIQRA records delivery attempts and errors, backs off between failures, and stops after eight attempts or a 2xx response. Queueing is limited to newly observed incidents from the last ten minutes. Existing queued alerts continue retrying after restart. Configure any email, SMS or paging destination in the approved receiver.
+
+Set NAVIQRA_RESTRICTED_ZONES to the comma-delimited names of explicitly designated Frigate zones. The monitor opens one review incident per tracked person or vehicle event in these zones. Review and record the outcome before taking action. Owners can remove local footage from reviewed incidents. The audit and incident records remain, and prior backups follow the station's retention policy.
+
+[Frigate camera configuration](https://docs.frigate.video/configuration/cameras/) · [Events API](https://docs.frigate.video/integrations/api/events-events-get/) · [Recording clip API](https://docs.frigate.video/integrations/api/recording-clip-camera-name-start-start-ts-end-end-ts-clip-mp-4-get/)

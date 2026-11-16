@@ -1,0 +1,80 @@
+name: Station review checks
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  webkit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt playwright==1.65.2
+      - run: python -m playwright install --with-deps webkit
+      - run: python pwa_browser_check.py
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'setup-windows.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors) { throw ($errors -join [Environment]::NewLine) }
+          powershell.exe -NoProfile -STA -File ./setup-windows.ps1 -SmokeTest
+          if ($LASTEXITCODE -ne 0) { throw 'Windows setup form initialization failed.' }
+          ./install-station.ps1
+          ./.venv/Scripts/python.exe -m unittest -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows tests failed.' }
+          powershell.exe -NoProfile -STA -File ./setup-windows.ps1 -PilotSmokeTest
+          if ($LASTEXITCODE -ne 0) { throw 'Windows first-run exercise failed.' }
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      NAVIQRA_SECRET: synthetic-ci-secret-for-loopback-only
+      NAVIQRA_SETUP_TOKEN: synthetic-ci-setup-token-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest -v
+      - name: Check local Compose deployment and restore
+        run: |
+          wait_for_station() {
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent --max-time 2 http://127.0.0.1:8080/ | grep -q 'Set up your station'; then
+                return 0
+              fi
+              sleep 1
+            done
+            docker compose logs station
+            return 1
+          }
+          docker compose config --quiet
+          docker compose up --build -d
+          wait_for_station
+          curl --fail --silent --show-error -o /dev/null http://127.0.0.1:8080/static/station.css
+          python pilot_http.py seed
+          docker compose exec -T station python backup.py /app/data/station.sqlite3 /app/data/ci-backup.sqlite3
+          docker compose exec -T station python backup.py /app/data/ci-backup.sqlite3 /app/data/ci-restored.sqlite3
+          printf 'services:\n  station:\n    environment:\n      NAVIQRA_DB: /app/data/ci-restored.sqlite3\n' > "$RUNNER_TEMP/pilot-restore.yaml"
+          docker compose -f compose.yaml -f "$RUNNER_TEMP/pilot-restore.yaml" up -d --force-recreate
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:8080/ | grep -q 'Sign in'; then
+              break
+            fi
+            sleep 1
+          done
+          python pilot_http.py verify
+      - name: Clean up the isolated test deployment
+        if: always()
+        run: docker compose down -v
