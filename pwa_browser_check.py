@@ -19,7 +19,7 @@ def verify(page, context, base, viewport):
     page.get_by_role("button", name="Sign in").click()
     expect(page.get_by_role("heading", name="Station Dashboard")).to_be_visible()
     tiles = page.locator("#camera-grid [data-camera-tile]:visible")
-    expect(tiles).to_have_count(4)
+    expect(tiles).to_have_count(12)
     tiles.first.scroll_into_view_if_needed()
     expect(page.locator("#camera-grid img:not([hidden])").first).to_be_visible(timeout=15000)
     for size in (viewport, {"width": viewport["height"], "height": viewport["width"]}):
@@ -33,6 +33,8 @@ def verify(page, context, base, viewport):
             });
         }"""), size
     page.set_viewport_size(viewport)
+    page.get_by_role("button", name="Show first 4 cameras").click()
+    expect(tiles).to_have_count(4)
     page.get_by_role("button", name="Show all 12 cameras").click()
     expect(tiles).to_have_count(12)
 
@@ -89,7 +91,7 @@ def main():
                             try:
                                 verify(context.new_page(), context, f"http://localhost:{server.effective_port}/",
                                        profile["viewport"])
-                                print(f"{name}: WebKit emulation, portrait/landscape, four/12 tiles and offline privacy passed.")
+                                print(f"{name}: WebKit emulation, portrait/landscape, 12 default tiles, four-tile option and offline privacy passed.")
                             finally:
                                 context.close()
                     finally:
