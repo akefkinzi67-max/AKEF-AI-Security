@@ -7,6 +7,8 @@ from pathlib import Path
 import tempfile
 import unittest
 from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest.mock import patch
 
 from backup import copy_database
@@ -248,6 +250,30 @@ class StationTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT SUM(delta) FROM movements").fetchone()[0], 5)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM stock_postings").fetchone()[0], 2)
 
+    def test_concurrent_stock_posting_charges_once(self):
+        self.assertEqual(self.post("product", sku="W", name="Water", barcode="", reorder=0).status_code, 302)
+        self.assertEqual(self.post("movement", sku="W", warehouse="A", reason="Receive", quantity=5).status_code, 302)
+        self.assertEqual(self.upload("race,1,2026-01-01T12:00:00Z,Sale,W,2,4.00,,\n").status_code, 302)
+        app = self.client.application
+        barrier = Barrier(2, timeout=5)
+
+        def post_stock(_):
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["username"] = "owner"
+                session["csrf"] = "synthetic-concurrent-csrf"
+            barrier.wait()
+            return client.post("/post-sale", data={
+                "csrf": "synthetic-concurrent-csrf", "source": "fixture", "transaction_id": "race",
+                "line_id": 1, "mode": "sell", "warehouse": "A"
+            }).status_code
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            self.assertEqual(list(executor.map(post_stock, range(2))), [302, 302])
+        with closing(connect(self.path)) as db:
+            self.assertEqual(db.execute("SELECT SUM(delta) FROM movements").fetchone()[0], 3)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM stock_postings").fetchone()[0], 1)
+
     def test_existing_database_upgrade_preserves_stock(self):
         path = self.path.with_name("legacy.db")
         with closing(connect(path)) as db:
@@ -295,6 +321,47 @@ class StationTest(unittest.TestCase):
             self.assertEqual(get_partner_xml("https://fixture.invalid/report", "Synthetic credential"), payload)
             request = opener.return_value.open.call_args.args[0]
             self.assertEqual(request.get_method(), "GET")
+
+    def test_partner_import_requires_owner_and_deduplicates(self):
+        self.assertEqual(self.post("user", username="manager", password="synthetic-password",
+                                   role="manager").status_code, 302)
+        config = self.path.with_name("synthetic-tlog.json")
+        config.write_text(json.dumps({"events": "event", "lines": "line", "fields": {
+            "transaction_id": {"scope": "event", "path": "id"},
+            "line_id": {"scope": "line", "path": "id"},
+            "occurred_at": {"scope": "event", "path": "stamp"},
+            "kind": {"scope": "line", "path": "kind"},
+            "quantity": {"scope": "line", "path": "qty"},
+            "amount": {"scope": "line", "path": "amount"},
+        }}), encoding="utf-8")
+        with patch.dict(os.environ, NAVIQRA_TLOG_MAP=str(config),
+                        NAVIQRA_PARTNER_XML_URL="https://fixture.invalid/read"):
+            app = create_app({"TESTING": True, "DATABASE": self.path,
+                              "SECRET_KEY": "synthetic-partner-test-key-abcdef"})
+        self.client = app.test_client()
+        imported = (b"<demo><event><id>1</id><stamp>2026-01-01T12:00:00Z</stamp>"
+                    b"<line><id>1</id><kind>Sale</kind><qty>1</qty><amount>2.50</amount></line></event></demo>")
+        self.post("login", username="manager", password="synthetic-password")
+        with patch("station.get_partner_xml", return_value=imported) as retrieve:
+            self.assertEqual(self.post("partner", source="Synthetic partner").status_code, 403)
+            retrieve.assert_not_called()
+            self.post("logout")
+            self.post("login", username="owner", password="synthetic-password")
+            self.assertEqual(self.post("partner", source="Synthetic partner").status_code, 302)
+            self.assertEqual(self.post("partner", source="Synthetic partner").status_code, 302)
+            retrieve.return_value = imported.replace(b"<amount>2.50</amount>", b"")
+            self.assertEqual(self.post("partner", source="Synthetic partner").status_code, 400)
+        with closing(connect(self.path)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*), SUM(cents) FROM sales").fetchone()[:], (1, 250))
+
+    def test_queue_observation_requires_explicit_time_zone(self):
+        self.assertEqual(self.post("queue", camera="Register 1", observed="2026-01-01T12:00:00",
+                                   waiting=2).status_code, 400)
+        self.assertEqual(self.post("queue", camera="Register 1", observed="2026-01-01T12:00:00-06:00",
+                                   waiting=2).status_code, 302)
+        with closing(connect(self.path)) as db:
+            self.assertEqual(tuple(db.execute("SELECT * FROM queue_observations").fetchone()),
+                             ("Register 1", "2026-01-01T18:00:00.000000+00:00", 2))
 
     def test_unicode_csrf_rejected_and_login_throttled(self):
         self.assertEqual(self.client.get("/", headers={"Host": "untrusted.example"}).status_code, 400)

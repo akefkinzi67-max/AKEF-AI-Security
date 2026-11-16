@@ -144,7 +144,7 @@
 {% if pending %}<p>{{ [pending | length,50] | min }} unapplied POS lines are shown for this period. Confidence: posted margin covers reviewed lines only. <a href="#stock-posting">Review POS stock postings</a>.</p>{% endif %}
 {% if exceptions %}<p>{{ exceptions | length }} recent POS exceptions are shown. Confidence: imported events; confirm the register and timing before using recordings. <a href="#pos">Review POS exceptions</a>.</p>{% endif %}
 </section>
-<section id="advisor"><h2>Register Advisor</h2><p>Estimates use observed transaction days and {{ minutes }} minute(s) of service per visit. Each register is planned at 80% utilization.</p>
+<section id="advisor"><h2>Register Advisor</h2><p>Estimates use historical weekday and hourly averages and {{ minutes }} minute(s) of service per visit. Each register is planned at 80% utilization.</p>
 <form method="post" action="/service-time">{{ csrf() }}{{ field('Minutes of service per visit','minutes','number') }}<button>Save service time</button></form>
 {% if forecast_error is not none %}<p>Historical mean absolute error: {{ forecast_error }} transactions per hour across {{ validation_hours }} evaluated hours ({{ evaluated_days }} observed days).</p>{% endif %}
 <p>Evidence is limited until at least six dates are observed for the weekday and at least three have sales in the hour. Use staffing estimates as a planning input and verify export coverage.</p>
@@ -156,7 +156,7 @@
 {% for hour in range(24) %}<tr><th>{{ '%02d:00' | format(hour) }}</th>
 {% for day in schedule %}{% set entry = day[hour] %}<td>{% if entry %}{{ entry[3] }} tx{% if entry[2] >= 6 and entry[6] >= 3 %} / {{ entry[4] }} reg.{% if entry[5] %} +{% endif %}{% endif %}{% else %}—{% endif %}</td>{% endfor %}</tr>{% endfor %}
 </tbody></table></div></details>
-{% if queue %}<p>{{ queue.waiting }} waiting at {{ queue.camera }} · {{ queue.observed }}</p>{% endif %}
+{% if queue %}<p>Manual observation: {{ queue.waiting }} waiting at {{ queue.camera }} · {{ queue.observed }}</p>{% endif %}
 {% for estimate in queue_estimates %}
 <p>{{ estimate.camera }} · {{ estimate.queue_zone }} · {% if estimate.observed is not none %}{{ estimate.waiting }} recently tracked · Low confidence until calibrated{% else %}Queue estimate unavailable · No recent tracking updates{% endif %}</p>
 {% endfor %}
