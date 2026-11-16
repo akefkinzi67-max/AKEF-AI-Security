@@ -72,6 +72,7 @@ if (toggle) {
     toggle.addEventListener("click", () => {
         const expand = toggle.getAttribute("aria-expanded") !== "true";
         toggle.setAttribute("aria-expanded", String(expand));
+        grid.classList.toggle("camera-grid-expanded", expand);
         toggle.textContent = expand ? "Show first 4 cameras" : "Show all 12 cameras";
         for (const tile of tiles.slice(4)) tile.hidden = !expand;
     });
